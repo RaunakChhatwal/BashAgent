@@ -1,0 +1,10 @@
+{
+    "properties": {
+        "command": {
+            "description": "The bash command to run.",
+            "type": "string"
+        }
+    },
+    "required": ["command"],
+    "type": "object"
+}
