@@ -3,7 +3,7 @@ use eventsource_stream::{Event, Eventsource};
 use futures::StreamExt;
 use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
 use serde_json::{json, Value};
-use crate::common::{write, Config, Exchange, ToolUse};
+use crate::common::{write, Config, Exchange, Tool, ToolUse};
 
 fn serialize_assistant_response(message: &str, tool_use: &[ToolUse]) -> Value {
     let mut content_block = vec![];
@@ -47,13 +47,25 @@ fn build_request_body(config: &Config, exchanges: &[Exchange], current: &Exchang
         }
     }
 
+    let bash_tool = Tool {
+        name: "bash",
+        description: include_str!("./resources/bash-description.txt"),
+        input_schema: include_str!("./resources/bash-schema.json")
+    };
+
+    let text_editor_tool = Tool {
+        name: "text_editor",
+        description: include_str!("./resources/text_editor-description.txt"),
+        input_schema: include_str!("./resources/text_editor-schema.json")
+    };
+
     return json!({
         "model": config.model,
         "max_tokens": config.max_tokens,
         "temperature": config.temperature,
         "stream": true,
         "system": config.system_prompt,
-        "tools": [crate::bash::bash], // , crate::text_editor::text_editor],
+        "tools": [bash_tool, text_editor_tool],
         "messages": messages
     });
 }

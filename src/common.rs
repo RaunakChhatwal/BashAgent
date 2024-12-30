@@ -76,4 +76,3 @@ pub async fn input(prompt: &str) -> io::Result<Option<String>> {
 }
 
 pub struct Client {}
-pub type SSHSession = russh::client::Handle<Client>;
