@@ -1,0 +1,58 @@
+syntax = "proto3";
+package bash_agent;
+import "google/protobuf/empty.proto";
+
+message BashRequest {
+    string command = 1;
+}
+
+message BashResponse {
+    string stdout = 1;
+    string stderr = 2;
+    optional int32 status_code = 3;
+}
+
+message ViewRange {
+    uint32 start = 1;
+    optional uint32 end = 2;
+}
+
+message ViewRequest {
+    string path = 1;
+    optional ViewRange view_range = 2;
+}
+
+message CreateRequest {
+    string path = 1;
+    string file_text = 2;
+}
+
+message Snippet {
+    uint32 start_line_number = 1;
+    repeated string lines = 2;
+}
+
+message StringReplaceRequest {
+    string path = 1;
+    string to_replace = 2;
+    optional string replacement = 3;
+}
+
+message InsertRequest {
+    string path = 1;
+    uint32 line_number = 2;
+    string line = 3;
+}
+
+message UndoEditRequest {
+    string path = 1;
+}
+
+service ToolRunner {
+    rpc RunBashTool(BashRequest) returns (BashResponse);
+    rpc View(ViewRequest) returns (Snippet);
+    rpc Create(CreateRequest) returns (google.protobuf.Empty);
+    rpc StringReplace(StringReplaceRequest) returns (Snippet);
+    rpc Insert(InsertRequest) returns (Snippet);
+    rpc UndoEdit(UndoEditRequest) returns (Snippet);
+}
