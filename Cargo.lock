@@ -228,6 +228,7 @@ dependencies = [
  "async-trait",
  "eventsource-stream",
  "futures",
+ "lazy_static",
  "prost",
  "prost-types",
  "reqwest",

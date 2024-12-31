@@ -5,6 +5,21 @@ use tonic::{transport::Server, Request, Response, Status};
 
 mod bash_agent {
     tonic::include_proto!("bash_agent");
+    impl Snippet {
+        pub fn new(content: &str, range: Option<(usize, usize)>) -> Snippet {
+            let lines = content.split("\n").map(str::to_owned);
+            let Some((mut start, end)) = range else {
+                return Snippet { start: 1, lines: lines.collect() };
+            };
+    
+            let padding = 4;
+            start = start.saturating_sub(padding);
+            Snippet {
+                start: 1 + start as u32,
+                lines: lines.take(end + padding).skip(start).collect()
+            }
+        }
+    }    
 }
 use bash_agent::{
     tool_runner_server, BashRequest, BashResponse, CreateRequest, InsertRequest,
@@ -34,22 +49,6 @@ impl ToolRunner {
         }
 
         Ok(())
-    }
-}
-
-impl Snippet {
-    fn new(content: &str, range: Option<(usize, usize)>) -> Snippet {
-        let lines = content.split("\n").map(str::to_owned);
-        let Some((mut start, end)) = range else {
-            return Snippet { start_line_number: 1, lines: lines.collect() };
-        };
-
-        let padding = 4;
-        start = start.saturating_sub(padding);
-        Snippet {
-            start_line_number: 1 + start as u32,
-            lines: lines.take(end + padding).skip(start).collect()
-        }
     }
 }
 

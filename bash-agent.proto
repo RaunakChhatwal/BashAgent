@@ -28,7 +28,7 @@ message CreateRequest {
 }
 
 message Snippet {
-    uint32 start_line_number = 1;
+    uint32 start = 1;
     repeated string lines = 2;
 }
 
