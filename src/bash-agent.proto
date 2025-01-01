@@ -7,8 +7,7 @@ message BashRequest {
 }
 
 message BashResponse {
-    string stdout = 1;
-    string stderr = 2;
+    string output = 1;
 }
 
 message ViewRange {

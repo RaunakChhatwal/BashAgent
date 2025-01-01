@@ -113,7 +113,7 @@ async fn stream_response_message(Event { event, data, .. }: Event, message: &mut
         message.push_str(tokens);
         write(tokens).await.context("Failed to output tokens.")?;
     } else if event == "content_block_stop" {
-        println!();
+        print!("\n\n");
     }
 
     Ok(None)

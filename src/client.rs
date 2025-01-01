@@ -29,24 +29,18 @@ async fn call_bash_tool(input: &Value) -> Result<String> {
         bail!("The \"command\" argument is required and must be a string");
     };
 
+    println!("Running command `{command}.`");
     let request = Request::new(BashRequest { input: command.into() });
-    let response = client().await?.run_bash_tool(request).await?.into_inner();
+    let output = client().await?.run_bash_tool(request).await?.into_inner().output;
 
-    let mut content = "".to_string();
-    if !response.stdout.is_empty() {
-        content.push_str("stdout:\n");
-        content.push_str(&response.stdout);
+    if !output.trim().is_empty() {
+        print!("{}\n\n.", output.trim());
     }
 
-    if !response.stderr.is_empty() {
-        content.push_str("\n\nstderr:\n");
-        content.push_str(&response.stderr);
-    }
-
-    Ok(content.trim_start().into())
+    Ok(output)
 }
 
-#[derive(serde::Deserialize)]
+#[derive(Debug, serde::Deserialize)]
 struct TextEditorInput {
     command: String,
     path: String,
@@ -110,17 +104,23 @@ async fn undo_edit(path: &str) -> Result<String> {
 }
 
 async fn call_text_editor_tool(input: &Value) -> Result<String> {
+    println!("Running text_editor with input {}.",
+        serde_json::to_string_pretty(input).context("Failed to parse input")?);
+
     let TextEditorInput { command, path, file_text, insert_line, new_str, old_str, view_range } =
         serde_json::from_value::<TextEditorInput>(input.clone()).context("Failed to parse input")?;
 
-    match command.as_str() {
+    let output = match command.as_str() {
         "view" => call_view(&path, view_range).await,
         "create" => call_create(&path, file_text).await,
         "str_replace" => call_str_replace(&path, old_str, new_str).await,
         "insert" => insert(&path, insert_line, new_str).await,
         "undo_edit" => undo_edit(&path).await,
         command => bail!("{command} is an invalid text_editor command")
-    }
+    }?;
+
+    print!("{output}\n\n");
+    Ok(output)
 }
 
 pub async fn call_tool(name: &str, input: &Value) -> Result<String> {

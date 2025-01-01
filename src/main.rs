@@ -17,7 +17,6 @@ async fn run_exchange(config: &Config, prompt: String, exchanges: &[Exchange]) -
 
     while !response.1.is_empty() {
         for tool_use in response.1.as_mut_slice() {
-            println!("\nRunning tool {} with input:\n{}", &tool_use.name, &tool_use.input);
             let result = client::call_tool(&tool_use.name, &tool_use.input).await;
             tool_use.output = match result.map_err(Error::downcast::<Status>) {
                 Ok(output) => (output, false),
@@ -25,7 +24,6 @@ async fn run_exchange(config: &Config, prompt: String, exchanges: &[Exchange]) -
                 Err(Ok(error)) => return Err(error.into()),
                 Err(Err(error)) => return Err(error.into())
             };
-            println!("\nTool output:\n{}", &tool_use.output.0);
         }
         exchange.response.push(response.clone());
         response = stream_response(send_request(&config, exchanges, &exchange).await?).await?;

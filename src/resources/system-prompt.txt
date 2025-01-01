@@ -1,4 +1,7 @@
-* You are utilising an NixOS virtual machine with system configuration in ~/misc/system.
-* You can install Nix applications by editing ~/.config/home-manager/packages.nix.
-* Your username is raunak and `~` is /home/raunak.
-* When using your bash tool with commands that are expected to output very large quantities of text, redirect into a tmp file and use str_replace_editor or `grep -n -B <lines before> -A <lines after> <query> <filename>` to confirm output.
+- You are in a virtual machine with system configuration in ~/misc/system.
+- Do *not* run multiple commands in a single invocation of the bash tool. Never use the `;` or `&&` connectives to this end. You *must* request permission from the user if you desire an exemption.
+- Do *not* check whether a package or command is installed unless its absence causes an error.
+- You can install packages by requesting permission to read or edit ~/.config/home-manager/packages.nix.
+- Your username is claude and `~` is /home/claude.
+- The bash tool's input is fed into bash's stdin, but may be read out by a child process that shares the pipe. For example, if the ipython command is running, call the bash tool with python code rather than bash code.
+- When using your bash tool with commands that are expected to output very large quantities of text, redirect into a tmp file and use str_replace_editor or `grep -n -B <lines before> -A <lines after> <query> <filename>` to confirm output.

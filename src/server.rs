@@ -3,7 +3,7 @@
 use std::{collections::HashMap, os::fd::AsRawFd, path::{Path, PathBuf}, process::Stdio};
 use anyhow::{bail, Context, Result};
 use tonic::{transport::Server, Request, Response, Status};
-use tokio::{io::AsyncWriteExt, fs::{write, read_to_string}, process::{Child, Command}, sync::Mutex};
+use tokio::{io::{AsyncReadExt, AsyncWriteExt}, fs, process::{Child, Command}, sync::Mutex};
 use nix::fcntl::{fcntl, FcntlArg::{F_GETFL, F_SETFL}, OFlag};
 use bash_agent::{
     tool_runner_server, BashRequest, BashResponse, CreateRequest, InsertRequest,
@@ -29,6 +29,67 @@ mod bash_agent {
     }    
 }
 
+// TODO: debug nix::ioctl_none!(ioc_pipe_wait_read_invoc, 'R', 69420);
+nix::ioctl_none_bad!(ioc_pipe_wait_read_invoc, 89900);
+
+fn read_pipe<T: AsRawFd>(pipe: &mut T) -> Result<String> {
+    let mut output = String::new();
+    let mut buffer = [0u8; 1024];
+
+    loop {
+        match nix::unistd::read(pipe.as_raw_fd(), &mut buffer) {
+            Ok(0) => break,
+            Ok(n) => output.push_str(&String::from_utf8_lossy(&buffer[..n])),
+            Err(nix::errno::Errno::EWOULDBLOCK) => break,
+            Err(error) => return Err(error).context("Error reading from pipe")
+        }
+    }
+
+    Ok(output)
+}
+
+async fn run_bash_tool(bash: &mut Child, request: BashRequest) -> Result<BashResponse> {
+    let stdin = bash.stdin.as_mut().context("Failed to get stdin handle.")?;
+    let fd = stdin.as_raw_fd();
+    let mut handle = tokio::task::spawn_blocking(move || unsafe { ioc_pipe_wait_read_invoc(fd) });
+
+    stdin.write_all((request.input + "\n").as_bytes()).await?;
+    stdin.flush().await?;
+
+    let stdout = bash.stdout.as_mut().context("Failed to get stdout handle.")?;
+    let mut stdout_bufreader = tokio::io::BufReader::new(stdout);
+    let mut stdout_buffer = [0u8; 1024];
+
+    let stderr = bash.stderr.as_mut().ok_or(Status::internal("Failed to get stderr handle."))?;
+    let mut stderr_bufreader = tokio::io::BufReader::new(stderr);
+    let mut stderr_buffer = [0u8; 1024];
+
+    let mut output = String::new();
+    loop {
+        tokio::select! {
+            result = &mut handle => {
+                result.context("Failed to wait for ioctl")?.context("Error calling ioctl")?;
+                break;
+            },
+            n = stdout_bufreader.read(&mut stdout_buffer) => match n {
+                Ok(0) => break,
+                Ok(n) => output.push_str(&String::from_utf8_lossy(&stdout_buffer[..n])),
+                Err(error) => return Err(error.into())
+            },
+            n = stderr_bufreader.read(&mut stderr_buffer) => match n {
+                Ok(0) => break,
+                Ok(n) => output.push_str(&String::from_utf8_lossy(&stderr_buffer[..n])),
+                Err(error) => return Err(error.into())
+            }
+        }
+    }
+
+    output.push_str(&read_pipe(stdout_bufreader.into_inner())?);
+    output.push_str(&read_pipe(stderr_bufreader.into_inner())?);
+
+    Ok(BashResponse { output })
+}
+
 #[derive(Default)]
 struct FileHistoryEntry {
     latest: String,
@@ -39,9 +100,9 @@ lazy_static::lazy_static!{
     static ref file_history: Mutex<HashMap<PathBuf, FileHistoryEntry>> = Default::default();
 }
 
-async fn write_and_save(path: PathBuf, content: String) -> Result<()> {
+async fn write(path: PathBuf, content: String) -> Result<()> {
     let mut history = file_history.lock().await;
-    write(&path, &content).await?;
+    fs::write(&path, &content).await?;
     if let Some(FileHistoryEntry { latest, history }) = history.get_mut(&path) {
         history.push(std::mem::replace(latest, content));
     } else {
@@ -62,7 +123,7 @@ async fn validate_path(path: &str) -> Result<PathBuf, Status> {
 
 async fn view(ViewRequest { path, view_range }: ViewRequest) -> Result<Snippet> {
     let path = validate_path(&path).await?;
-    let content = read_to_string(&path).await?;
+    let content = fs::read_to_string(&path).await?;
 
     let Some(ViewRange { start, end }) = view_range else {
         return Ok(Snippet::new(&content, None));
@@ -81,12 +142,12 @@ async fn create(CreateRequest { path, file_text }: CreateRequest) -> Result<()> 
         bail!("File already exists");
     }
 
-    write_and_save(path, file_text).await
+    write(path, file_text).await
 }
 
 async fn string_replace(request: StringReplaceRequest) -> Result<Snippet> {
     let path = validate_path(&request.path).await?;
-    let mut content = read_to_string(&path).await?;
+    let mut content = fs::read_to_string(&path).await?;
 
     let to_replace = &request.to_replace;
     let Some(index) = content.find(to_replace) else {
@@ -103,13 +164,13 @@ async fn string_replace(request: StringReplaceRequest) -> Result<Snippet> {
     let end = start + replacement.matches('\n').count();
     let snippet = Snippet::new(&content, Some((start, end + 1)));
 
-    write_and_save(path, content).await?;
+    write(path, content).await?;
     Ok(snippet)
 }
 
 async fn insert(request: InsertRequest) -> Result<Snippet> {
     let path = validate_path(&request.path).await?;
-    let mut content = read_to_string(&path).await?;
+    let mut content = fs::read_to_string(&path).await?;
 
     // iterate to current line
     let line_number = request.line_number.saturating_sub(1) as usize;
@@ -126,7 +187,7 @@ async fn insert(request: InsertRequest) -> Result<Snippet> {
     let end = line_number + line.matches('\n').count();
     let snippet = Snippet::new(&content, Some((line_number, end + 1)));
 
-    write_and_save(path, content).await?;
+    write(path, content).await?;
     Ok(snippet)
 }
 
@@ -139,7 +200,7 @@ async fn undo_edit(request: UndoEditRequest) -> Result<Snippet> {
     let Some(new_latest) = history.pop() else {
         bail!("Already at oldest change");
     };
-    if let Err(error) = write(&path, &new_latest).await {
+    if let Err(error) = fs::write(&path, &new_latest).await {
         history.push(new_latest);
         return Err(error.into());
     }
@@ -156,50 +217,13 @@ fn to_status(error: anyhow::Error) -> Status {
     Status::unknown(format!("{error:?}"))
 }
 
-// TODO: debug nix::ioctl_none!(ioc_pipe_wait_read_invoc, 'R', 69420);
-nix::ioctl_none_bad!(ioc_pipe_wait_read_invoc, 89900);
-
-fn read_pipe<T: AsRawFd>(pipe: &mut T) -> Result<String> {
-    let mut output = String::new();
-    let mut buffer = [0u8; 1024];
-
-    loop {
-        match nix::unistd::read(pipe.as_raw_fd(), &mut buffer) {
-            Ok(0) => break,
-            Ok(n) => output.push_str(&String::from_utf8_lossy(&buffer[..n])),
-            Err(nix::errno::Errno::EWOULDBLOCK) => break,
-            Err(error) => return Err(error.into())
-        }
-    }
-
-    Ok(output)
-}
-
 type TonicResult<T> = Result<Response<T>, Status>;
 #[tonic::async_trait]
 impl tool_runner_server::ToolRunner for ToolRunner {
     async fn run_bash_tool(&self, request: Request<BashRequest>) -> TonicResult<BashResponse> {
         let mut bash = self.bash.lock().await;
-
-        let stdin = bash.stdin.as_mut().ok_or(Status::internal("Failed to get stdin handle."))?;
-        let fd = stdin.as_raw_fd();
-        let handle = tokio::task::spawn_blocking(move || unsafe { ioc_pipe_wait_read_invoc(fd) });
-
-        stdin.write_all((request.into_inner().input + "\n").as_bytes()).await?;
-        stdin.flush().await?;
-
-        handle.await.map_err(|_| Status::internal("Failed to wait for ioctl"))?
-            .map_err(|error| Status::internal(format!("Failed to wait for ioctl: {error}")))?;
-
-        let stdout = bash.stdout.as_mut().ok_or(Status::internal("Failed to get stdout handle."))?;
-        let output = read_pipe(stdout)
-            .map_err(|error| Status::internal(format!("Error reading from pipe: {error}")))?;
-
-        let stderr = bash.stderr.as_mut().ok_or(Status::internal("Failed to get stderr handle."))?;
-        let error = read_pipe(stderr)
-            .map_err(|error| Status::internal(format!("Error reading from pipe: {error}")))?;
-
-        Ok(Response::new(BashResponse { stdout: output, stderr: error }))
+        run_bash_tool(&mut bash, request.into_inner()).await.map(Response::new)
+            .map_err(|error| Status::internal(format!("{error:?}")))
     }
 
     async fn view(&self, request: Request<ViewRequest>) -> TonicResult<Snippet> {
