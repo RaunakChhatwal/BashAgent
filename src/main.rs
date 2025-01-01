@@ -6,6 +6,7 @@ mod common;
 
 use std::sync::Arc;
 use anyhow::{Error, Context, Result};
+use tonic::{Status, Code::Unknown};
 use anthropic::{send_request, stream_response};
 use common::{Config, Exchange};
 
@@ -18,15 +19,11 @@ async fn run_exchange(config: &Config, prompt: String, exchanges: &[Exchange]) -
         for tool_use in response.1.as_mut_slice() {
             println!("\nRunning tool {} with input:\n{}", &tool_use.name, &tool_use.input);
             let result = client::call_tool(&tool_use.name, &tool_use.input).await;
-            tool_use.output = match result.map_err(Error::downcast::<tonic::transport::Error>) {
+            tool_use.output = match result.map_err(Error::downcast::<Status>) {
                 Ok(output) => (output, false),
+                Err(Ok(error)) if error.code() == Unknown => (error.message().into(), true),
                 Err(Ok(error)) => return Err(error.into()),
-                Err(Err(error)) => match error.downcast::<tonic::Status>() {
-                    Ok(status) if status.code() == tonic::Code::Cancelled
-                        => return Err(status.into()),
-                    Ok(status) => (format!("{}: {}", status.code(), status.message()), true),
-                    Err(error) => (format!("{error:?}"), true)
-                }
+                Err(Err(error)) => return Err(error.into())
             };
             println!("\nTool output:\n{}", &tool_use.output.0);
         }

@@ -29,18 +29,6 @@ pub struct ToolUse {
     pub output: (String, bool)      // bool denotes whether error
 }
 
-// pub enum ToolError {
-//     ExecutionError(anyhow::Error),
-//     ToolUseError(anyhow::Error)
-// }
-
-// #[macro_export]
-// macro_rules! bail_tool_use {
-//     ($($arg:tt)*) => {
-//         return Err(crate::common::ToolError::ToolUseError(anyhow::anyhow!($($arg)*)))
-//     };
-// }
-
 #[derive(Clone, Debug)]
 pub struct Exchange {
     pub prompt: String,
