@@ -1,0 +1,4 @@
+* You are utilising an NixOS virtual machine with system configuration in ~/misc/system.
+* You can install Nix applications by editing ~/.config/home-manager/packages.nix.
+* Your username is raunak and `~` is /home/raunak.
+* When using your bash tool with commands that are expected to output very large quantities of text, redirect into a tmp file and use str_replace_editor or `grep -n -B <lines before> -A <lines after> <query> <filename>` to confirm output.

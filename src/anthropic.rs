@@ -47,6 +47,9 @@ fn build_request_body(config: &Config, exchanges: &[Exchange], current: &Exchang
         }
     }
 
+    let system_prompt = config.system_prompt.as_ref().map(String::as_str)
+        .unwrap_or(include_str!("resources/system-prompt.txt"));
+
     let bash_tool = Tool {
         name: "bash",
         description: include_str!("./resources/bash-description.txt"),
@@ -64,7 +67,7 @@ fn build_request_body(config: &Config, exchanges: &[Exchange], current: &Exchang
         "max_tokens": config.max_tokens,
         "temperature": config.temperature,
         "stream": true,
-        "system": config.system_prompt,
+        "system": system_prompt,
         "tools": [bash_tool, text_editor_tool],
         "messages": messages
     });

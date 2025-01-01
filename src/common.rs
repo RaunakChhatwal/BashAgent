@@ -37,7 +37,8 @@ pub struct Exchange {
 
 #[derive(Clone, Debug, serde::Deserialize, PartialEq, serde::Serialize)]
 pub struct Config {
-    pub system_prompt: String,
+    #[serde(default)]
+    pub system_prompt: Option<String>,
     pub temperature: f64,
     pub max_tokens: u32,
     pub model: String,
