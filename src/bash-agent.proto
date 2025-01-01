@@ -3,13 +3,12 @@ package bash_agent;
 import "google/protobuf/empty.proto";
 
 message BashRequest {
-    string command = 1;
+    string input = 1;
 }
 
 message BashResponse {
     string stdout = 1;
     string stderr = 2;
-    optional int32 status_code = 3;
 }
 
 message ViewRange {

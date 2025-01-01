@@ -21,9 +21,14 @@ async fn run_exchange(config: &Config, prompt: String, exchanges: &[Exchange]) -
             tool_use.output = match result.map_err(Error::downcast::<tonic::transport::Error>) {
                 Ok(output) => (output, false),
                 Err(Ok(error)) => return Err(error.into()),
-                Err(Err(error)) => (format!("{error:?}"), true)
+                Err(Err(error)) => match error.downcast::<tonic::Status>() {
+                    Ok(status) if status.code() == tonic::Code::Cancelled
+                        => return Err(status.into()),
+                    Ok(status) => (format!("{}: {}", status.code(), status.message()), true),
+                    Err(error) => (format!("{error:?}"), true)
+                }
             };
-            println!("\nOutput:\n{}", &tool_use.output.0);
+            println!("\nTool output:\n{}", &tool_use.output.0);
         }
         exchange.response.push(response.clone());
         response = stream_response(send_request(&config, exchanges, &exchange).await?).await?;

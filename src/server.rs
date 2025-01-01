@@ -1,7 +1,14 @@
 #![feature(iter_advance_by)]
 
-use std::{collections::HashMap, path};
+use std::{collections::HashMap, os::fd::AsRawFd, path::{Path, PathBuf}, process::Stdio};
+use anyhow::Context;
 use tonic::{transport::Server, Request, Response, Status};
+use tokio::{io::AsyncWriteExt, process::{Child, Command}, sync::Mutex};
+use nix::fcntl::{fcntl, FcntlArg::{F_GETFL, F_SETFL}, OFlag};
+use bash_agent::{
+    tool_runner_server, BashRequest, BashResponse, CreateRequest, InsertRequest,
+    Snippet, StringReplaceRequest, UndoEditRequest, ViewRange, ViewRequest
+};
 
 mod bash_agent {
     tonic::include_proto!("bash_agent");
@@ -21,10 +28,6 @@ mod bash_agent {
         }
     }    
 }
-use bash_agent::{
-    tool_runner_server, BashRequest, BashResponse, CreateRequest, InsertRequest,
-    Snippet, StringReplaceRequest, UndoEditRequest, ViewRange, ViewRequest
-};
 
 #[derive(Default)]
 struct FileHistoryEntry {
@@ -33,13 +36,13 @@ struct FileHistoryEntry {
 }
 
 type Result<T> = std::result::Result<T, Status>;
-#[derive(Default)]
 struct ToolRunner {
-    file_history: tokio::sync::Mutex<HashMap<path::PathBuf, FileHistoryEntry>>
+    file_history: Mutex<HashMap<PathBuf, FileHistoryEntry>>,
+    bash: Mutex<Child>
 }
 
 impl ToolRunner {
-    async fn write(&self, path: path::PathBuf, content: String) -> std::io::Result<()> {
+    async fn write(&self, path: PathBuf, content: String) -> std::io::Result<()> {
         let mut file_history = self.file_history.lock().await;
         tokio::fs::write(&path, &content).await?;
         if let Some(FileHistoryEntry { latest, history }) = file_history.get_mut(&path) {
@@ -52,8 +55,8 @@ impl ToolRunner {
     }
 }
 
-async fn validate_path(path: &str) -> Result<path::PathBuf> {
-    let path = path::Path::new(path).to_owned();
+async fn validate_path(path: &str) -> Result<PathBuf> {
+    let path = Path::new(path).to_owned();
     if !path.is_absolute() {
         return Err(Status::invalid_argument("The path must be absolute"));
     }
@@ -61,18 +64,48 @@ async fn validate_path(path: &str) -> Result<path::PathBuf> {
     Ok(path)
 }
 
+// TODO: debug nix::ioctl_none!(ioc_pipe_wait_read_invoc, 'R', 69420);
+nix::ioctl_none_bad!(ioc_pipe_wait_read_invoc, 89900);
+
+fn read_pipe<T: AsRawFd>(pipe: &mut T) -> anyhow::Result<String> {
+    let mut output = String::new();
+    let mut buffer = [0u8; 1024];
+
+    loop {
+        match nix::unistd::read(pipe.as_raw_fd(), &mut buffer) {
+            Ok(0) => break,
+            Ok(n) => output.push_str(&String::from_utf8_lossy(&buffer[..n])),
+            Err(nix::errno::Errno::EWOULDBLOCK) => break,
+            Err(error) => return Err(error.into())
+        }
+    }
+
+    Ok(output)
+}
+
 #[tonic::async_trait]
 impl tool_runner_server::ToolRunner for ToolRunner {
     async fn run_bash_tool(&self, request: Request<BashRequest>) -> Result<Response<BashResponse>> {
-        let command = &request.get_ref().command;
-        let output = tokio::process::Command::new("bash").args(["-c", command]).output().await
-            .map_err(|error| Status::internal(format!("Failed to spawn `{command}`: {error}")))?;
-        let stdout = String::from_utf8(output.stdout)
-            .map_err(|_| Status::data_loss("Unable to read stdout as UTF-8 string"))?;
-        let stderr = String::from_utf8(output.stderr)
-            .map_err(|_| Status::data_loss("Unable to read stderr as UTF-8 string"))?;
+        let mut bash = self.bash.lock().await;
 
-        Ok(Response::new(BashResponse { stdout, stderr, status_code: output.status.code() }))
+        let stdin = bash.stdin.as_mut().ok_or(Status::internal("Failed to get stdin handle."))?;
+        let fd = stdin.as_raw_fd();
+        let handle = tokio::task::spawn_blocking(move || unsafe { ioc_pipe_wait_read_invoc(fd) });
+
+        stdin.write_all((request.into_inner().input + "\n").as_bytes()).await?;
+        stdin.flush().await?;
+
+        handle.await.expect("Failed to wait for ioctl").expect("Error running ioctl");
+
+        let stdout = bash.stdout.as_mut().ok_or(Status::internal("Failed to get stdout handle."))?;
+        let output = read_pipe(stdout)
+            .map_err(|error| Status::internal(format!("Error reading from pipe: {error}")))?;
+
+        let stderr = bash.stderr.as_mut().ok_or(Status::internal("Failed to get stderr handle."))?;
+        let error = read_pipe(stderr)
+            .map_err(|error| Status::internal(format!("Error reading from pipe: {error}")))?;
+
+        Ok(Response::new(BashResponse { stdout: output, stderr: error }))
     }
 
     async fn view(&self, request: Request<ViewRequest>) -> Result<Response<Snippet>> {
@@ -168,9 +201,32 @@ impl tool_runner_server::ToolRunner for ToolRunner {
     }
 }
 
+fn set_nonblocking<T: AsRawFd>(pipe: &mut T) -> anyhow::Result<i32> {
+    let mut flags = OFlag::from_bits_truncate(fcntl(pipe.as_raw_fd(), F_GETFL)?);
+    flags |= OFlag::O_NONBLOCK;
+    fcntl(pipe.as_raw_fd(), F_SETFL(flags)).map_err(Into::into)
+}
+
+fn spawn_bash() -> anyhow::Result<Child> {
+    let mut bash = Command::new("bash")
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
+        .spawn().context("Error spawning bash")?;
+
+    let stdout = bash.stdout.as_mut().ok_or(Status::internal("Failed to get stdout handle."))?;
+    set_nonblocking(stdout)?;
+
+    let stderr = bash.stderr.as_mut().ok_or(Status::internal("Failed to get stderr handle."))?;
+    set_nonblocking(stderr)?;
+
+    Ok(bash)
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let address = "[::1]:50051".parse()?;
-    let service = tool_runner_server::ToolRunnerServer::new(ToolRunner::default());
+    let service = tool_runner_server::ToolRunnerServer::new(ToolRunner {
+        bash: Mutex::new(spawn_bash()?),
+        file_history: Default::default()
+    });
     Server::builder().add_service(service).serve(address).await.map_err(Into::into)
 }

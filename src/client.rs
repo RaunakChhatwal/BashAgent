@@ -29,12 +29,12 @@ async fn call_bash_tool(input: &Value) -> Result<String> {
         bail!("The \"command\" argument is required and must be a string");
     };
 
-    let request = Request::new(BashRequest { command: command.into() });
+    let request = Request::new(BashRequest { input: command.into() });
     let response = client().await?.run_bash_tool(request).await?.into_inner();
 
     let mut content = "".to_string();
     if !response.stdout.is_empty() {
-        content.push_str("\n\nstdout:\n");
+        content.push_str("stdout:\n");
         content.push_str(&response.stdout);
     }
 
@@ -43,11 +43,7 @@ async fn call_bash_tool(input: &Value) -> Result<String> {
         content.push_str(&response.stderr);
     }
 
-    match response.status_code {
-        None => bail!("The command did not exit cleanly.{}", content),
-        Some(0) => Ok(content.trim_start().into()),
-        Some(status) => bail!("Command exited with status {status}:{}", content)
-    }
+    Ok(content.trim_start().into())
 }
 
 #[derive(serde::Deserialize)]
