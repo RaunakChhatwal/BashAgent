@@ -8,11 +8,11 @@ use std::sync::Arc;
 use anyhow::{Error, Context, Result};
 use tonic::{Status, Code::Unknown};
 use anthropic::{send_request, stream_response};
-use common::{Config, Exchange};
+use common::{Cli, Exchange};
 
-async fn run_exchange(config: &Config, prompt: String, exchanges: &[Exchange]) -> Result<Exchange> {
+async fn run_exchange(prompt: String, exchanges: &[Exchange]) -> Result<Exchange> {
     let mut exchange = Exchange { prompt, response: vec![] };
-    let response = send_request(&config, exchanges, &exchange).await?;
+    let response = send_request(exchanges, &exchange).await?;
     let mut response = stream_response(response).await?;
 
     while !response.1.is_empty() {
@@ -26,7 +26,7 @@ async fn run_exchange(config: &Config, prompt: String, exchanges: &[Exchange]) -
             };
         }
         exchange.response.push(response.clone());
-        response = stream_response(send_request(&config, exchanges, &exchange).await?).await?;
+        response = stream_response(send_request(exchanges, &exchange).await?).await?;
     }
 
     exchange.response.push(response);
@@ -45,8 +45,7 @@ async fn trigger_cancel(cancel: Arc<tokio::sync::Notify>) {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let config = tokio::fs::read_to_string("config.json").await.context("Couldn't load config")?;
-    let config = serde_json::from_str::<Config>(&config).context("Couldn't parse config")?;
+    let _: Cli = clap::Parser::parse();
 
     let cancel = Arc::new(tokio::sync::Notify::new());
     tokio::spawn(trigger_cancel(Arc::clone(&cancel)));
@@ -60,7 +59,7 @@ async fn main() -> Result<()> {
 
         tokio::select! {
             _ = cancel.notified() => continue,
-            exchange = run_exchange(&config, prompt, &exchanges) => exchanges.push(exchange?)
+            exchange = run_exchange(prompt, &exchanges) => exchanges.push(exchange?)
         }
     }
 

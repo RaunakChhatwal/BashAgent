@@ -3,7 +3,7 @@ use eventsource_stream::{Event, Eventsource};
 use futures::StreamExt;
 use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
 use serde_json::{json, Value};
-use crate::common::{write, Config, Exchange, Tool, ToolUse};
+use crate::common::{write, Cli, Exchange, Tool, ToolUse};
 
 fn serialize_assistant_response(message: &str, tool_use: &[ToolUse]) -> Value {
     let mut content_block = vec![];
@@ -34,8 +34,7 @@ fn serialize_tool_results(tool_use: &[ToolUse]) -> Value {
     json!({ "role": "user", "content": tool_results })
 }
 
-fn build_request_body(config: &Config, exchanges: &[Exchange], current: &Exchange)
--> serde_json::Value {
+fn build_request_body(exchanges: &[Exchange], current: &Exchange) -> serde_json::Value {
     let mut messages = vec![];
     for Exchange { prompt, response } in exchanges.into_iter().chain([current]) {
         messages.push(json!({ "role": "user", "content": prompt }));
@@ -46,9 +45,6 @@ fn build_request_body(config: &Config, exchanges: &[Exchange], current: &Exchang
             }
         }
     }
-
-    let system_prompt = config.system_prompt.as_ref().map(String::as_str)
-        .unwrap_or(include_str!("resources/system-prompt.txt"));
 
     let bash_tool = Tool {
         name: "bash",
@@ -62,26 +58,28 @@ fn build_request_body(config: &Config, exchanges: &[Exchange], current: &Exchang
         input_schema: include_str!("./resources/text_editor-schema.json")
     };
 
+    let Cli { temperature, max_tokens, model, .. } = clap::Parser::parse();
     return json!({
-        "model": config.model,
-        "max_tokens": config.max_tokens,
-        "temperature": config.temperature,
+        "model": model,
+        "max_tokens": max_tokens.unwrap_or(2048),
+        "temperature": temperature.unwrap_or(1.0),
         "stream": true,
-        "system": system_prompt,
+        "system": include_str!("resources/system-prompt.txt"),
         "tools": [bash_tool, text_editor_tool],
         "messages": messages
     });
 }
 
-pub async fn send_request(config: &Config, exchanges: &[Exchange], current: &Exchange)
--> Result<reqwest::Response> {
+pub async fn send_request(exchanges: &[Exchange], current: &Exchange) -> Result<reqwest::Response> {
     let mut headers = HeaderMap::new();
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-    headers.insert("x-api-key", HeaderValue::from_str(&config.api_key)?);
+    let api_key = std::env::var("ANTHROPIC_API_KEY")
+        .context("Environment variable ANTHROPIC_API_KEY not set.")?;
+    headers.insert("x-api-key", HeaderValue::from_str(&api_key)?);
     headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
 
     let url = "https://api.anthropic.com/v1/messages";
-    let body = build_request_body(config, exchanges, current).to_string();
+    let body = build_request_body(exchanges, current).to_string();
     let request = reqwest::Client::new().post(url).headers(headers).body(body);
 
     let response = request.send().await?;

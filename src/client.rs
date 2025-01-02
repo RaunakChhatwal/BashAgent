@@ -18,7 +18,8 @@ mod bash_agent {
 }
 
 async fn client() -> Result<Client<Channel>> {
-    Client::connect("http://[::1]:50051").await.context("Failed to connect to gRPC server")
+    let crate::common::Cli { server, .. } = clap::Parser::parse();
+    Client::connect(format!("http://{server}:50051")).await.context("Failed to connect to server")
 }
 
 async fn call_bash_tool(input: &Value) -> Result<String> {

@@ -68,11 +68,15 @@ in {
 
   nix.settings.experimental-features = [ "nix-command" "flakes" ];
 
-  # virtualisation.docker.enable = true;
+  virtualisation.docker.enable = true;
 
   # Open ports in the firewall.
   networking.nftables.enable = true;
-  networking.firewall.enable = true;
+  networking.firewall = {
+    enable = true;
+    trustedInterfaces = [ "docker0" ];
+    allowedTCPPorts = [ 50051 ];
+  };
 
   system.stateVersion = "25.05";  # Do not change this
 

@@ -35,14 +35,15 @@ pub struct Exchange {
     pub response: Vec<(String, Vec<ToolUse>)>
 }
 
-#[derive(Clone, Debug, serde::Deserialize, PartialEq, serde::Serialize)]
-pub struct Config {
-    #[serde(default)]
-    pub system_prompt: Option<String>,
-    pub temperature: f64,
-    pub max_tokens: u32,
+#[derive(Clone, Debug, clap::Parser, PartialEq)]
+#[command(version, about, long_about = None)]
+pub struct Cli {
+    #[arg(long)]
+    pub server: String,
+    #[arg(long)]
     pub model: String,
-    pub api_key: String,
+    pub temperature: Option<f64>,
+    pub max_tokens: Option<u32>
 }
 
 pub async fn write<T: AsRef<[u8]>>(text: T) -> io::Result<()> {

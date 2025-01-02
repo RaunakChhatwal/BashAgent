@@ -29,8 +29,7 @@ mod bash_agent {
     }    
 }
 
-// TODO: debug nix::ioctl_none!(ioc_pipe_wait_read_invoc, 'R', 69420);
-nix::ioctl_none_bad!(ioc_pipe_wait_read_invoc, 89900);
+nix::ioctl_none!(ioc_pipe_wait_read_invoc, '?', 0x69);
 
 fn read_pipe<T: AsRawFd>(pipe: &mut T) -> Result<String> {
     let mut output = String::new();
@@ -269,7 +268,7 @@ fn spawn_bash() -> Result<Child> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let address = "[::1]:50051".parse()?;
+    let address = "0.0.0.0:50051".parse()?;
     let tool_runner = ToolRunner { bash: Mutex::new(spawn_bash()?) };
     let service = tool_runner_server::ToolRunnerServer::new(tool_runner);
     Server::builder().add_service(service).serve(address).await.map_err(Into::into)
