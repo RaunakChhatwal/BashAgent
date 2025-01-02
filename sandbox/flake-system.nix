@@ -2,7 +2,7 @@
   description = "NixOS configuration.";
 
   inputs.nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
-  inputs.bash-agent.url = "github:Raunak/BashAgent/main";
+  inputs.bash-agent.url = "github:RaunakChhatwal/BashAgent/main";
 
   outputs = { nixpkgs, bash-agent, ... }:
   let

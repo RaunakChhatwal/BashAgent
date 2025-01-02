@@ -66,11 +66,9 @@ in {
     settings.PasswordAuthentication = true;
   };
 
-  environment.variables.PKG_CONFIG_PATH = "/run/current-system/sw/lib/pkgconfig/";
-
   nix.settings.experimental-features = [ "nix-command" "flakes" ];
 
-  virtualisation.docker.enable = true;
+  # virtualisation.docker.enable = true;
 
   # Open ports in the firewall.
   networking.nftables.enable = true;

@@ -12,6 +12,7 @@
     zip unzip zlib
     fd
     ripgrep
+    neovim
     (python3.withPackages (python-pkgs: with python-pkgs; [
       numpy
       ipython
