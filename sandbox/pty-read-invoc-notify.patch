@@ -1,0 +1,87 @@
+diff --git a/drivers/tty/n_tty.c b/drivers/tty/n_tty.c
+index 5e9ca4376..482bd449a 100644
+--- a/drivers/tty/n_tty.c
++++ b/drivers/tty/n_tty.c
+@@ -104,6 +104,10 @@ struct n_tty_data {
+ 	/* non-atomic */
+ 	bool no_room;
+ 
++	/* atomic */
++	wait_queue_head_t read_invoc_wait;
++ 	atomic_t read_invoc_seqno;
++
+ 	/* must hold exclusive termios_rwsem to reset these */
+ 	unsigned char lnext:1, erasing:1, raw:1, real_raw:1, icanon:1;
+ 	unsigned char push:1;
+@@ -1896,6 +1900,7 @@ static void n_tty_close(struct tty_struct *tty)
+ 		n_tty_packet_mode_flush(tty);
+ 
+ 	down_write(&tty->termios_rwsem);
++	wake_up_interruptible_all(&ldata->read_invoc_wait);
+ 	vfree(ldata);
+ 	tty->disc_data = NULL;
+ 	up_write(&tty->termios_rwsem);
+@@ -1919,6 +1924,8 @@ static int n_tty_open(struct tty_struct *tty)
+ 		return -ENOMEM;
+ 
+ 	ldata->overrun_time = jiffies;
++	init_waitqueue_head(&ldata->read_invoc_wait);
++	atomic_set(&ldata->read_invoc_seqno, 0);
+ 	mutex_init(&ldata->atomic_read_lock);
+ 	mutex_init(&ldata->output_lock);
+ 
+@@ -2274,6 +2281,9 @@ static ssize_t n_tty_read(struct tty_struct *tty, struct file *file, u8 *kbuf,
+ 				}
+ 				up_read(&tty->termios_rwsem);
+ 
++				atomic_inc(&ldata->read_invoc_seqno);
++		 		wake_up_interruptible_all(&ldata->read_invoc_wait);
++
+ 				timeout = wait_woken(&wait, TASK_INTERRUPTIBLE,
+ 						timeout);
+ 
+@@ -2504,7 +2514,7 @@ static int n_tty_ioctl(struct tty_struct *tty, unsigned int cmd,
+ 		       unsigned long arg)
+ {
+ 	struct n_tty_data *ldata = tty->disc_data;
+-	unsigned int num;
++	unsigned int num, read_invoc_seqno;
+ 
+ 	switch (cmd) {
+ 	case TIOCOUTQ:
+@@ -2517,6 +2527,10 @@ static int n_tty_ioctl(struct tty_struct *tty, unsigned int cmd,
+ 			num = read_cnt(ldata);
+ 		up_write(&tty->termios_rwsem);
+ 		return put_user(num, (unsigned int __user *) arg);
++	case TIOCRDINVOC:
++		read_invoc_seqno = atomic_read(&ldata->read_invoc_seqno);
++ 		return wait_event_interruptible(ldata->read_invoc_wait,
++ 			atomic_read(&ldata->read_invoc_seqno) != read_invoc_seqno);
+ 	default:
+ 		return n_tty_ioctl_helper(tty, cmd, arg);
+ 	}
+diff --git a/include/linux/tty_ldisc.h b/include/linux/tty_ldisc.h
+index af01e8907..40f33f350 100644
+--- a/include/linux/tty_ldisc.h
++++ b/include/linux/tty_ldisc.h
+@@ -10,6 +10,7 @@ struct tty_struct;
+ #include <linux/list.h>
+ #include <linux/lockdep.h>
+ #include <linux/seq_file.h>
++#include <asm/termbits.h>
+ 
+ /*
+  * the semaphore definition
+diff --git a/include/uapi/asm-generic/ioctls.h b/include/uapi/asm-generic/ioctls.h
+index cdc9f4ca8..38bbde205 100644
+--- a/include/uapi/asm-generic/ioctls.h
++++ b/include/uapi/asm-generic/ioctls.h
+@@ -98,6 +98,8 @@
+ #define TIOCMIWAIT	0x545C	/* wait for a change on serial input line(s) */
+ #define TIOCGICOUNT	0x545D	/* read serial port inline interrupt counts */
+ 
++#define TIOCRDINVOC 0x5469  /* wait for a task to block on read */
++
+ /*
+  * Some arches already define FIOQSIZE due to a historical
+  * conflict with a Hayes modem-specific ioctl value.

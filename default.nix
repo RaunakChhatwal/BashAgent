@@ -1,5 +1,4 @@
-let rust-overlay =
-  builtins.fetchTarball "https://github.com/oxalica/rust-overlay/archive/master.tar.gz";
+let rust-overlay = builtins.fetchGit "https://github.com/oxalica/rust-overlay/";
 in { pkgs ? import <nixpkgs> { overlays = [ (import rust-overlay) ]; }}:
 let
   toolchain = pkgs.rust-bin.selectLatestNightlyWith (toolchain: toolchain.default);

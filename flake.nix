@@ -17,11 +17,7 @@
   outputs = { nixpkgs, flake-utils, rust-overlay, nixos-generators, ... }:
     flake-utils.lib.eachDefaultSystem (system:
       let
-        pkgs = import nixpkgs {
-          inherit system;
-          overlays = [ (import rust-overlay) ];
-        };
-
+        pkgs = import nixpkgs { inherit system; overlays = [ (import rust-overlay) ]; };
         bash-agent = (import ./default.nix) { inherit pkgs; };
       in {
         packages.default = bash-agent;

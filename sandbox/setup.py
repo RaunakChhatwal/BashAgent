@@ -30,7 +30,7 @@ with ssh:
         sftp.put("./flake.lock", str(system/"flake.lock"))
         sftp.put("./sandbox/flake-system.nix", str(system/"flake.nix"))
         sftp.put("./sandbox/configuration.nix", str(system/"nixos/configuration.nix"))
-        sftp.put("./sandbox/pipe-read-invoc-notify.patch", str(system/"nixos/pipe-read-invoc-notify.patch"))
+        sftp.put("./sandbox/pty-read-invoc-notify.patch", str(system/"nixos/pty-read-invoc-notify.patch"))
 
         run_remote_command(ssh, "mkdir -p ~/.config/home-manager")
         home_manager_dir = Path('/home/claude/.config/home-manager')
@@ -41,6 +41,6 @@ with ssh:
     imports = "imports = \\[ .\\/hardware-configuration.nix \\];"
     run_remote_command(ssh, f"sed -i 's/^  # {imports}/  {imports}/' "
         "~/misc/system/nixos/configuration.nix")
-    # run_remote_command(ssh, "sudo nixos-rebuild switch --flake ~/misc/system")
 
-    run_remote_command(ssh, "home-manager switch")
+    # run_remote_command(ssh, "sudo nixos-rebuild switch --flake ~/misc/system")
+    # run_remote_command(ssh, "home-manager switch")

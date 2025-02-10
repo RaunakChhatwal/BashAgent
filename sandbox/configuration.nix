@@ -1,8 +1,8 @@
 { pkgs, bash-agent, ... }:
 let patched-kernel = pkgs.linuxPackages_latest.kernel.override {
   kernelPatches = [{
-    name = "An ioctl command to wait until a task blocks to read a pipe.";
-    patch = ./pipe-read-invoc-notify.patch;
+    name = "An ioctl command to wait until a task blocks to read a pty.";
+    patch = ./pty-read-invoc-notify.patch;
   }];
 };
 in {
@@ -22,20 +22,6 @@ in {
 
   time.timeZone = "America/New_York";
 
-  # Select internationalisation properties.
-  i18n.defaultLocale = "en_US.UTF-8";
-  i18n.extraLocaleSettings = {
-    LC_ADDRESS = "en_US.UTF-8";
-    LC_IDENTIFICATION = "en_US.UTF-8";
-    LC_MEASUREMENT = "en_US.UTF-8";
-    LC_MONETARY = "en_US.UTF-8";
-    LC_NAME = "en_US.UTF-8";
-    LC_NUMERIC = "en_US.UTF-8";
-    LC_PAPER = "en_US.UTF-8";
-    LC_TELEPHONE = "en_US.UTF-8";
-    LC_TIME = "en_US.UTF-8";
-  };
-
   # Configure keymap in X11
   services.xserver.xkb = {
     variant = "";
@@ -43,7 +29,7 @@ in {
   };
   
   users.users.root.initialPassword = "mcdonalds";
-  users.users.claude = {
+  users.users."claude" = {
     isNormalUser = true;
     initialPassword = "mcdonalds";
     description = "Claude";
@@ -76,6 +62,20 @@ in {
     enable = true;
     trustedInterfaces = [ "docker0" ];
     allowedTCPPorts = [ 50051 ];
+  };
+
+  # Select internationalisation properties.
+  i18n.defaultLocale = "en_US.UTF-8";
+  i18n.extraLocaleSettings = {
+    LC_ADDRESS = "en_US.UTF-8";
+    LC_IDENTIFICATION = "en_US.UTF-8";
+    LC_MEASUREMENT = "en_US.UTF-8";
+    LC_MONETARY = "en_US.UTF-8";
+    LC_NAME = "en_US.UTF-8";
+    LC_NUMERIC = "en_US.UTF-8";
+    LC_PAPER = "en_US.UTF-8";
+    LC_TELEPHONE = "en_US.UTF-8";
+    LC_TIME = "en_US.UTF-8";
   };
 
   system.stateVersion = "25.05";  # Do not change this

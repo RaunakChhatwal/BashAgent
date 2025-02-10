@@ -66,5 +66,6 @@ Since this functionality depends on a custom Linux kernel feature, this applicat
 4) Configure bridge networking for the VM
 5) Run `python sandbox/setup.py <VM IP address>` after running the VM for the first time
 6) SSH into the VM using username claude and password "mcdonalds"
-7) `cd` into ~/misc/system and run `sudo nix flake update bash-agent` followed by `sudo nixos-rebuild switch --flake .`
-8) Run `bash-agent-server`, restart it whenever you want a new session
+7) Run `home-manager switch`
+8) `cd` into ~/misc/system and run `sudo nix flake update bash-agent` followed by `sudo nixos-rebuild switch --flake .`
+9) Run `bash-agent-server`, restart it whenever you want a new session

@@ -3,8 +3,7 @@
 use std::{collections::HashMap, os::fd::AsRawFd, path::{Path, PathBuf}, process::Stdio};
 use anyhow::{bail, Context, Result};
 use tonic::{transport::Server, Request, Response, Status};
-use tokio::{io::{AsyncReadExt, AsyncWriteExt}, fs, process::{Child, Command}, sync::Mutex};
-use nix::fcntl::{fcntl, FcntlArg::{F_GETFL, F_SETFL}, OFlag};
+use tokio::{io::{self, AsyncReadExt, AsyncWriteExt}, fs, process::Command, sync::Mutex};
 use bash_agent::*;
 
 mod bash_agent {
@@ -16,7 +15,7 @@ mod bash_agent {
             let Some((mut start, end)) = range else {
                 return Snippet { start: 1, lines: lines.collect() };
             };
-    
+
             let padding = 4;
             start = start.saturating_sub(padding);
             Snippet {
@@ -27,64 +26,47 @@ mod bash_agent {
     }    
 }
 
-nix::ioctl_none!(ioc_pipe_wait_read_invoc, '?', 0x69);
+// wait for a task to block on read
+nix::ioctl_none!(t_ioc_read_invoc, 'T', 0x69);
 
-// doesn't block due to set_nonblocking
-fn read_pipe(pipe: &mut impl AsRawFd) -> Result<String> {
-    let mut output = String::new();
+async fn run_bash_tool(
+    master: &mut fs::File,
+    slave_fd: i32,
+    BashRequest { input }: BashRequest
+) -> Result<BashResponse> {
+    let mut handle = tokio::task::spawn_blocking(move || unsafe { t_ioc_read_invoc(slave_fd) });
+
+    master.write_all((input + "\n").as_bytes()).await?;
+    master.flush().await?;
+
+    let mut output = vec![];
+    let mut bufreader = tokio::io::BufReader::new(master);
     let mut buffer = [0u8; 1024];
-
-    loop {
-        match nix::unistd::read(pipe.as_raw_fd(), &mut buffer) {
-            Ok(0) => break,
-            Ok(n) => output.push_str(&String::from_utf8_lossy(&buffer[..n])),
-            Err(nix::errno::Errno::EWOULDBLOCK) => break,
-            Err(error) => return Err(error).context("Error reading from pipe")
-        }
-    }
-
-    Ok(output)
-}
-
-async fn run_bash_tool(bash: &mut Child, request: BashRequest) -> Result<BashResponse> {
-    let stdin = bash.stdin.as_mut().context("Failed to get stdin handle.")?;
-    let fd = stdin.as_raw_fd();
-    let mut handle = tokio::task::spawn_blocking(move || unsafe { ioc_pipe_wait_read_invoc(fd) });
-
-    stdin.write_all((request.input + "\n").as_bytes()).await?;
-    stdin.flush().await?;
-
-    let stdout = bash.stdout.as_mut().context("Failed to get stdout handle.")?;
-    let stderr = bash.stderr.as_mut().context("Failed to get stderr handle.")?;
-
-    let mut stdout_bufreader = tokio::io::BufReader::new(stdout);
-    let mut stderr_bufreader = tokio::io::BufReader::new(stderr);
-
-    let mut stdout_buffer = [0u8; 1024];
-    let mut stderr_buffer = [0u8; 1024];
-
-    let mut output = String::new();
     loop {
         tokio::select! {
             result = &mut handle => {
                 result.context("Failed to wait for ioctl")?.context("Error calling ioctl")?;
                 break;
             },
-            n = stdout_bufreader.read(&mut stdout_buffer) => match n {
+            n = bufreader.read(&mut buffer) => match n {
                 Ok(0) => break,
-                Ok(n) => output.push_str(&String::from_utf8_lossy(&stdout_buffer[..n])),
-                Err(error) => return Err(error.into())
-            },
-            n = stderr_bufreader.read(&mut stderr_buffer) => match n {
-                Ok(0) => break,
-                Ok(n) => output.push_str(&String::from_utf8_lossy(&stderr_buffer[..n])),
-                Err(error) => return Err(error.into())
+                Ok(n) => output.extend(&buffer[..n]),
+                Err(error) => return Err(error).context("Failed to read from master pty")
             }
         }
     }
 
-    output.push_str(&read_pipe(stdout_bufreader.into_inner())?);
-    output.push_str(&read_pipe(stderr_bufreader.into_inner())?);
+    // read any leftover data
+    let mut future = bufreader.read(&mut buffer);
+    while let futures::task::Poll::Ready(n) = futures::poll!(std::pin::pin!(future)) {
+        output.extend(&buffer[..n.context("Failed to read from master pty")?]); 
+        future = bufreader.read(&mut buffer);
+    }
+
+    // remove escape sequences
+    let escape_sequence_pattern =
+        regex::Regex::new(r"\x1b\[[0-9;]*[\x40-\x7E]").expect("Invalid regex");
+    let output = escape_sequence_pattern.replace_all(&String::from_utf8_lossy(&output), "").into();
 
     Ok(BashResponse { output })
 }
@@ -209,7 +191,8 @@ async fn undo_edit(request: UndoEditRequest) -> Result<Snippet> {
 }
 
 struct ToolRunner {
-    bash: Mutex<Child>
+    master: Mutex<fs::File>,
+    slave_fd: i32
 }
 
 fn to_status(error: anyhow::Error) -> Status {
@@ -221,8 +204,8 @@ type TonicResult<T> = Result<Response<T>, Status>;
 #[tonic::async_trait]
 impl tool_runner_server::ToolRunner for ToolRunner {
     async fn run_bash_tool(&self, request: Request<BashRequest>) -> TonicResult<BashResponse> {
-        let mut bash = self.bash.lock().await;
-        run_bash_tool(&mut bash, request.into_inner()).await.map(Response::new)
+        let master = &mut self.master.lock().await;
+        run_bash_tool(master, self.slave_fd, request.into_inner()).await.map(Response::new)
             // format as debug to include the anyhow context
             .map_err(|error| Status::internal(format!("{error:?}")))
     }
@@ -248,28 +231,39 @@ impl tool_runner_server::ToolRunner for ToolRunner {
     }
 }
 
-fn set_nonblocking(pipe: &mut impl AsRawFd) -> Result<i32> {
-    let flags = fcntl(pipe.as_raw_fd(), F_GETFL).context("Failed to get default pipe flags")?;
-    fcntl(pipe.as_raw_fd(), F_SETFL(OFlag::from_bits_truncate(flags) | OFlag::O_NONBLOCK))
-        .context("Error flagging read operation as nonblocking")
+async fn echo_pty(mut master: fs::File) -> Result<()> {
+    let mut buffer = [0u8; 1024];
+    loop {
+        let n = master.read(&mut buffer).await.context("Error reading master pty")?;
+        if n == 0 {     // handle EOF
+            std::process::exit(0);
+        }
+
+        io::stdout().write_all(&buffer[..n]).await.context("Error echoing pty output")?;
+        io::stdout().flush().await.context("Error flushing stdout")?;
+    }
 }
 
-// spawn bash and set its pipes' NONBLOCK flag so that the read_pipe function above doesn't block
-fn spawn_bash() -> Result<Child> {
-    let mut bash = Command::new("bash")
-        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
-        .spawn().context("Error spawning bash")?;
+fn spawn_pty() -> Result<(fs::File, std::fs::File)> {
+    let pty_pair = nix::pty::openpty(None, None).context("Failed to open pty pair")?;
+    let slave = std::fs::File::from(pty_pair.slave);
 
-    set_nonblocking(bash.stdout.as_mut().context("Failed to get stdout handle.")?)?;
-    set_nonblocking(bash.stderr.as_mut().context("Failed to get stderr handle.")?)?;
+    let mut bash = Command::new("bash");
+    for setter in [Command::stdin, Command::stdout, Command::stderr] {
+        setter(&mut bash, Stdio::from(slave.try_clone().context("Error copying slave pty")?));
+    }
+    bash.spawn().context("Error spawning bash subprocess")?;
 
-    Ok(bash)
+    Ok((std::fs::File::from(pty_pair.master).into(), slave))
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let (master, slave) = spawn_pty()?;
+    tokio::spawn(echo_pty(master.try_clone().await.context("Failed to copy master pty")?));
+
     let address = "0.0.0.0:50051".parse()?;
-    let tool_runner = ToolRunner { bash: Mutex::new(spawn_bash()?) };
+    let tool_runner = ToolRunner { master: Mutex::new(master), slave_fd: slave.as_raw_fd() };
     let service = tool_runner_server::ToolRunnerServer::new(tool_runner);
     Server::builder().add_service(service).serve(address).await.map_err(Into::into)
 }
