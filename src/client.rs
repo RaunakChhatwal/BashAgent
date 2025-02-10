@@ -1,13 +1,11 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use serde_json::Value;
-use tonic::{transport::Channel, Request};
-use bash_agent::{
-    tool_runner_client::ToolRunnerClient as Client, BashRequest, CreateRequest, InsertRequest,
-    StringReplaceRequest, UndoEditRequest, ViewRange, ViewRequest
-};
+use tonic::{transport::Channel, Code::Unknown, Request};
+use bash_agent::{*, tool_runner_client::ToolRunnerClient as Client};
 
 mod bash_agent {
     tonic::include_proto!("bash_agent");
+
     impl Snippet {
         pub fn to_string_numbered(self) -> String {
             self.lines.into_iter().enumerate()
@@ -92,14 +90,14 @@ async fn call_str_replace(path: &str, old: Option<String>, new: Option<String>) 
 async fn insert(path: &str, line_number: Option<u32>, line: Option<String>) -> Result<String> {
     let line_number = line_number.context("insert_line is required with the insert command")?;
     let line = line.context("new_str is required with the insert command")?;
-    let request = Request::new(InsertRequest { path: path.into(), line_number, line } );
+    let request = Request::new(InsertRequest { path: path.into(), line_number, line });
     let snippet = client().await?.insert(request).await?.into_inner().to_string_numbered();
     Ok(format!("Review the change and make sure it's as expected ({}). {}:\n{snippet}",
         "correct indentation, no duplicate lines, etc", "Edit the file if not."))
 }
 
 async fn undo_edit(path: &str) -> Result<String> {
-    let request = Request::new(UndoEditRequest { path: path.into() } );
+    let request = Request::new(UndoEditRequest { path: path.into() });
     let snippet = client().await?.undo_edit(request).await?.into_inner().to_string_numbered();
     Ok(format!("Last edit to {path} undone successfully. Please review:\n{snippet}"))
 }
@@ -124,10 +122,22 @@ async fn call_text_editor_tool(input: &Value) -> Result<String> {
     Ok(output)
 }
 
-pub async fn call_tool(name: &str, input: &Value) -> Result<String> {
-    match name {
+pub async fn call_tool(name: &str, input: &Value) -> Result<(String, bool)> {
+    let result = match name {
         "bash" => call_bash_tool(input).await,
         "text_editor" => call_text_editor_tool(input).await,
-        tool => bail!("Tool {tool} not available")
+        tool => Err(anyhow!("Tool {tool} not available"))
+    };
+
+    match result.map_err(anyhow::Error::downcast::<tonic::Status>) {
+        Ok(output) => Ok((output, false)),
+        // show server anyhow errors - which are coded as unknown - to llm
+        Err(Ok(error)) if error.code() == Unknown => Ok((error.message().into(), true)),
+        // escalate misc errors - e.g. connection or internal errors
+        Err(Ok(error)) => Err(error.into()),
+        Err(Err(error)) => match error.downcast::<tonic::transport::Error>() {
+            Ok(error) => Err(error.into()),      // escalate transport error
+            Err(error) => Ok((format!("{error:?}"), true))  // show client anyhow errors to llm
+        }
     }
 }

@@ -64,7 +64,7 @@ Since this functionality depends on a custom Linux kernel feature, this applicat
 2) Download the disk image from the releases page and run `unxz nixos.qcow2.xz`
 3) You can run nixos.qcow2 using virt-manager or use `qemu-img` to reformat it into VDI for VirtualBox.
 4) Configure bridge networking for the VM
-5) Run `python sandbox/setup.py <VM IP address>` after running the VM for the first time. This will take a few minutes.
+5) Run `python sandbox/setup.py <VM IP address>` after running the VM for the first time
 6) SSH into the VM using username claude and password "mcdonalds"
-7) `cd` into ~/misc/system and run `sudo flake update bash-agent; sudo nixos-rebuild switch --flake .` This will take a few minutes.
+7) `cd` into ~/misc/system and run `sudo nix flake update bash-agent` followed by `sudo nixos-rebuild switch --flake .`
 8) Run `bash-agent-server`, restart it whenever you want a new session

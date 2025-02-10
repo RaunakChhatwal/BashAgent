@@ -5,13 +5,11 @@ use anyhow::{bail, Context, Result};
 use tonic::{transport::Server, Request, Response, Status};
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, fs, process::{Child, Command}, sync::Mutex};
 use nix::fcntl::{fcntl, FcntlArg::{F_GETFL, F_SETFL}, OFlag};
-use bash_agent::{
-    tool_runner_server, BashRequest, BashResponse, CreateRequest, InsertRequest,
-    Snippet, StringReplaceRequest, UndoEditRequest, ViewRange, ViewRequest
-};
+use bash_agent::*;
 
 mod bash_agent {
     tonic::include_proto!("bash_agent");
+
     impl Snippet {
         pub fn new(content: &str, range: Option<(usize, usize)>) -> Snippet {
             let lines = content.split("\n").map(str::to_owned);
@@ -31,7 +29,8 @@ mod bash_agent {
 
 nix::ioctl_none!(ioc_pipe_wait_read_invoc, '?', 0x69);
 
-fn read_pipe<T: AsRawFd>(pipe: &mut T) -> Result<String> {
+// doesn't block due to set_nonblocking
+fn read_pipe(pipe: &mut impl AsRawFd) -> Result<String> {
     let mut output = String::new();
     let mut buffer = [0u8; 1024];
 
@@ -56,11 +55,12 @@ async fn run_bash_tool(bash: &mut Child, request: BashRequest) -> Result<BashRes
     stdin.flush().await?;
 
     let stdout = bash.stdout.as_mut().context("Failed to get stdout handle.")?;
-    let mut stdout_bufreader = tokio::io::BufReader::new(stdout);
-    let mut stdout_buffer = [0u8; 1024];
+    let stderr = bash.stderr.as_mut().context("Failed to get stderr handle.")?;
 
-    let stderr = bash.stderr.as_mut().ok_or(Status::internal("Failed to get stderr handle."))?;
+    let mut stdout_bufreader = tokio::io::BufReader::new(stdout);
     let mut stderr_bufreader = tokio::io::BufReader::new(stderr);
+
+    let mut stdout_buffer = [0u8; 1024];
     let mut stderr_buffer = [0u8; 1024];
 
     let mut output = String::new();
@@ -111,17 +111,17 @@ async fn write(path: PathBuf, content: String) -> Result<()> {
     Ok(())
 }
 
-async fn validate_path(path: &str) -> Result<PathBuf, Status> {
+fn validate_path(path: &str) -> Result<PathBuf> {
     let path = Path::new(path).to_owned();
     if !path.is_absolute() {
-        return Err(Status::invalid_argument("The path must be absolute"));
+        bail!("The path must be absolute");
     }
 
     Ok(path)
 }
 
 async fn view(ViewRequest { path, view_range }: ViewRequest) -> Result<Snippet> {
-    let path = validate_path(&path).await?;
+    let path = validate_path(&path)?;
     let content = fs::read_to_string(&path).await?;
 
     let Some(ViewRange { start, end }) = view_range else {
@@ -136,16 +136,16 @@ async fn view(ViewRequest { path, view_range }: ViewRequest) -> Result<Snippet> 
 }
 
 async fn create(CreateRequest { path, file_text }: CreateRequest) -> Result<()> {
-    let path = validate_path(&path).await?;
+    let path = validate_path(&path)?;
     if path.exists() {
-        bail!("File already exists");
+        bail!("{path:?} already exists");
     }
 
     write(path, file_text).await
 }
 
 async fn string_replace(request: StringReplaceRequest) -> Result<Snippet> {
-    let path = validate_path(&request.path).await?;
+    let path = validate_path(&request.path)?;
     let mut content = fs::read_to_string(&path).await?;
 
     let to_replace = &request.to_replace;
@@ -168,14 +168,14 @@ async fn string_replace(request: StringReplaceRequest) -> Result<Snippet> {
 }
 
 async fn insert(request: InsertRequest) -> Result<Snippet> {
-    let path = validate_path(&request.path).await?;
+    let path = validate_path(&request.path)?;
     let mut content = fs::read_to_string(&path).await?;
 
     // iterate to current line
     let line_number = request.line_number.saturating_sub(1) as usize;
     let mut newlines = content.chars().enumerate().filter(|(_, char)| char == &'\n');
     if newlines.advance_by(line_number).is_err() {
-        bail!("There are only {} lines in {path:?}", content.matches('\n').count());
+        bail!("There are only {} lines in {path:?}", content.matches('\n').count() + 1);
     };
 
     // insert after current line
@@ -191,7 +191,7 @@ async fn insert(request: InsertRequest) -> Result<Snippet> {
 }
 
 async fn undo_edit(request: UndoEditRequest) -> Result<Snippet> {
-    let path = validate_path(&request.path).await?;
+    let path = validate_path(&request.path)?;
     let mut history = file_history.lock().await;
     let Some(FileHistoryEntry { latest, history }) = history.get_mut(&path) else {
         bail!("No history found for {path:?}");
@@ -213,15 +213,17 @@ struct ToolRunner {
 }
 
 fn to_status(error: anyhow::Error) -> Status {
-    Status::unknown(format!("{error:?}"))
+    Status::unknown(format!("{error:?}"))       // format as debug to include the anyhow context
 }
 
 type TonicResult<T> = Result<Response<T>, Status>;
+
 #[tonic::async_trait]
 impl tool_runner_server::ToolRunner for ToolRunner {
     async fn run_bash_tool(&self, request: Request<BashRequest>) -> TonicResult<BashResponse> {
         let mut bash = self.bash.lock().await;
         run_bash_tool(&mut bash, request.into_inner()).await.map(Response::new)
+            // format as debug to include the anyhow context
             .map_err(|error| Status::internal(format!("{error:?}")))
     }
 
@@ -246,22 +248,20 @@ impl tool_runner_server::ToolRunner for ToolRunner {
     }
 }
 
-fn set_nonblocking<T: AsRawFd>(pipe: &mut T) -> Result<i32> {
-    let mut flags = OFlag::from_bits_truncate(fcntl(pipe.as_raw_fd(), F_GETFL)?);
-    flags |= OFlag::O_NONBLOCK;
-    fcntl(pipe.as_raw_fd(), F_SETFL(flags)).map_err(Into::into)
+fn set_nonblocking(pipe: &mut impl AsRawFd) -> Result<i32> {
+    let flags = fcntl(pipe.as_raw_fd(), F_GETFL).context("Failed to get default pipe flags")?;
+    fcntl(pipe.as_raw_fd(), F_SETFL(OFlag::from_bits_truncate(flags) | OFlag::O_NONBLOCK))
+        .context("Error flagging read operation as nonblocking")
 }
 
+// spawn bash and set its pipes' NONBLOCK flag so that the read_pipe function above doesn't block
 fn spawn_bash() -> Result<Child> {
     let mut bash = Command::new("bash")
         .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
         .spawn().context("Error spawning bash")?;
 
-    let stdout = bash.stdout.as_mut().ok_or(Status::internal("Failed to get stdout handle."))?;
-    set_nonblocking(stdout)?;
-
-    let stderr = bash.stderr.as_mut().ok_or(Status::internal("Failed to get stderr handle."))?;
-    set_nonblocking(stderr)?;
+    set_nonblocking(bash.stdout.as_mut().context("Failed to get stdout handle.")?)?;
+    set_nonblocking(bash.stderr.as_mut().context("Failed to get stderr handle.")?)?;
 
     Ok(bash)
 }

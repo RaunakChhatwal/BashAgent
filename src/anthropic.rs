@@ -97,8 +97,8 @@ fn parse_tool_use_content_block_start(response: &Value) -> Result<ToolUse> {
     Ok(ToolUse { name, id, ..Default::default() })
 }
 
-async fn stream_response_message(Event { event, data, .. }: Event, message: &mut String)
--> Result<Option<ToolUse>> {
+async fn stream_response_message(event: Event, message: &mut String) -> Result<Option<ToolUse>> {
+    let Event { event, data, .. } = event;
     let response = serde_json::from_str::<Value>(&data).context("Data not valid JSON.")?;
 
     if response["content_block"]["type"].as_str() == Some("tool_use") {
@@ -138,6 +138,7 @@ fn stream_tool_use(
     Ok(None)
 }
 
+// first stream the message and print the tokens, then stream the tool uses
 pub async fn stream_response(response: reqwest::Response) -> Result<(String, Vec<ToolUse>)> {
     let mut message = "".to_string();
     let mut tool_uses = vec![];

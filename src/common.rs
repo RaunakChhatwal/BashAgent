@@ -42,7 +42,9 @@ pub struct Cli {
     pub server: String,
     #[arg(long)]
     pub model: String,
+    #[arg(long)]
     pub temperature: Option<f64>,
+    #[arg(long)]
     pub max_tokens: Option<u32>
 }
 

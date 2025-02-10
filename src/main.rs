@@ -5,31 +5,28 @@ mod client;
 mod common;
 
 use std::sync::Arc;
-use anyhow::{Error, Context, Result};
-use tonic::{Status, Code::Unknown};
+use anyhow::{Context, Result};
 use anthropic::{send_request, stream_response};
 use common::{Cli, Exchange};
 
+// send prompt to llm, run tools, send back tool results, repeat until no more tool use
 async fn run_exchange(prompt: String, exchanges: &[Exchange]) -> Result<Exchange> {
     let mut exchange = Exchange { prompt, response: vec![] };
     let response = send_request(exchanges, &exchange).await?;
-    let mut response = stream_response(response).await?;
+    let (mut message, mut tool_uses) = stream_response(response).await?;
 
-    while !response.1.is_empty() {
-        for tool_use in response.1.as_mut_slice() {
-            let result = client::call_tool(&tool_use.name, &tool_use.input).await;
-            tool_use.output = match result.map_err(Error::downcast::<Status>) {
-                Ok(output) => (output, false),
-                Err(Ok(error)) if error.code() == Unknown => (error.message().into(), true),
-                Err(Ok(error)) => return Err(error.into()),
-                Err(Err(error)) => return Err(error.into())
-            };
+    while !tool_uses.is_empty() {
+        for tool_use in &mut tool_uses {
+            tool_use.output = client::call_tool(&tool_use.name, &tool_use.input).await?;
         }
-        exchange.response.push(response.clone());
-        response = stream_response(send_request(exchanges, &exchange).await?).await?;
+        exchange.response.push((message, tool_uses));
+        (message, tool_uses) = stream_response(send_request(exchanges, &exchange).await?).await?;
     }
 
-    exchange.response.push(response);
+    if !message.is_empty() {
+        exchange.response.push((message, vec![]));
+    }
+
     Ok(exchange)
 }
 
@@ -45,7 +42,7 @@ async fn trigger_cancel(cancel: Arc<tokio::sync::Notify>) {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let _: Cli = clap::Parser::parse();
+    let _: Cli = clap::Parser::parse();     // ensure argv is parseable into Cli
 
     let cancel = Arc::new(tokio::sync::Notify::new());
     tokio::spawn(trigger_cancel(Arc::clone(&cancel)));
@@ -54,7 +51,7 @@ async fn main() -> Result<()> {
     loop {
         let Some(prompt) = common::input("> ").await.context("Failed to read prompt")? else {
             println!();
-            break;
+            return Ok(());
         };
 
         tokio::select! {
@@ -62,6 +59,4 @@ async fn main() -> Result<()> {
             exchange = run_exchange(prompt, &exchanges) => exchanges.push(exchange?)
         }
     }
-
-    Ok(())
 }

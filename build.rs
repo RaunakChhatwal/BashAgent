@@ -1,4 +1,3 @@
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tonic_build::compile_protos("./src/bash-agent.proto")?;
-    Ok(())
+fn main() -> std::io::Result<()> {
+    tonic_build::compile_protos("./src/bash-agent.proto")
 }
