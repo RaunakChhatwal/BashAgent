@@ -28,14 +28,10 @@ async fn call_bash_tool(input: &Value) -> Result<String> {
         bail!("The \"command\" argument is required and must be a string");
     };
 
-    println!("Running command `{command}.`");
     let request = Request::new(BashRequest { input: command.into() });
     let output = client().await?.run_bash_tool(request).await?.into_inner().output;
 
-    if !output.trim().is_empty() {
-        print!("{}\n\n.", output.trim());
-    }
-
+    println!("{}\n{output}\n{}", "-".repeat(20), "-".repeat(20));
     Ok(output)
 }
 

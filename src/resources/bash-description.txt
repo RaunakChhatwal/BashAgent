@@ -1,7 +1,8 @@
-Run commands in a bash session.
+Run commands in a bash TTY session.
 * When invoking this tool, the contents of the "command" parameter does NOT need to be XML-escaped.
 * Do not run multiple commands in a single invocation of the bash tool. Never use the `;` or `&&` connectives to this end. You *must* request permission from the user if you desire an exemption.
 * Install packages via ~/.config/home-manager/home.nix.
 * To inspect a particular line range of a file, e.g. lines 10-25, try 'sed -n 10,25p /path/to/the/file'.
+* If an interactive command is running, call the bash tool with the command's input rather than bash.
 * Ask permission before running a command that may produce a large amount of output.
 * Ask permission before running a command that may run for over a minute.

@@ -40,7 +40,7 @@ pub struct Exchange {
 pub struct Cli {
     #[arg(long)]
     pub server: String,
-    #[arg(long)]
+    #[arg(long, default_value = "claude-3-5-sonnet-20241022")]
     pub model: String,
     #[arg(long)]
     pub temperature: Option<f64>,

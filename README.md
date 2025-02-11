@@ -1,6 +1,6 @@
 # BashAgent
 
-BashAgent is the first AI agentic application to allow access to interactive bash commands and developer shells. It achieves this by having developed a feature into the Linux kernel to introspect the unix pipe between a bash process and its child processes. When a bash command expects input from the user, the kernel notifies the BashAgent server and the server in turn relays the prompt to the client.
+BashAgent is the first AI agentic application to allow access to interactive bash commands and developer shells. It achieves this by having developed a feature into the Linux kernel to introspect pseudo-terminal (PTY) interactions between a bash process and its child processes. When a bash command expects input from the user, the kernel notifies the BashAgent server and the server in turn relays the prompt to the client.
 
 ## Demonstration
 ```
@@ -56,7 +56,7 @@ To see more details about the mp.pi object, we could inspect it further. Would y
 
 ## Usage
 
-Since this functionality depends on a custom Linux kernel feature, this application is split into client and server CLI programs, `bash-agent` and `bash-agent-server` respectively. `bash-agent` is cross-platform whereas `bash-agent-server` must run in a VM with the kernel patch. `bash-agent` takes as argument the VM's ip address and the model name (e.g. claude-3-5-sonnet-20241022).
+Since this functionality depends on our custom kernel, this application is split into client and server CLI programs, `bash-agent` and `bash-agent-server` respectively. `bash-agent` is cross-platform whereas `bash-agent-server` must run in a VM with the kernel patch. `bash-agent` takes as argument the VM's ip address and optionally the model name.
 
 ## Installation
 

@@ -54,6 +54,7 @@ async fn run_bash_tool(
     }
 
     // read any leftover data
+    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     let data_future = std::pin::pin!(output_recv.recv());
     if let futures::task::Poll::Ready(Some(data)) = futures::poll!(data_future) {
         output.extend(data); 
@@ -250,7 +251,6 @@ async fn echo_pty(master: std::os::fd::OwnedFd, mut input_recv: Recv, output_sen
         // TODO: modularize this
         tokio::select! {
             n = stdin.read(&mut input_buffer) => match n {
-                Ok(0) => std::process::exit(0),
                 Ok(n) => {
                     let input = input_buffer[..n].to_vec();
                     write_all(&mut write_end, &input).await.context("Failed to write pty input")?;
@@ -264,7 +264,6 @@ async fn echo_pty(master: std::os::fd::OwnedFd, mut input_recv: Recv, output_sen
                 output_sender.send(input).context("Failed to echo input to output_sender")?;
             },
             n = read_end.read(&mut output_buffer) => match n {
-                Ok(0) => std::process::exit(0),
                 Ok(n) => {
                     let data = &output_buffer[..n];
                     output_sender.send(data.to_vec()).context("Failed to send pty output")?;
@@ -278,7 +277,7 @@ async fn echo_pty(master: std::os::fd::OwnedFd, mut input_recv: Recv, output_sen
 
 nix::ioctl_none_bad!(t_ioc_s_c_tty, nix::libc::TIOCSCTTY);
 
-fn spawn_pty() -> Result<(std::os::fd::OwnedFd, std::fs::File)> {
+fn spawn_pty() -> Result<(std::os::fd::OwnedFd, std::fs::File, tokio::process::Child)> {
     let pty_pair = nix::pty::openpty(None, None).context("Failed to open pty pair")?;
     let slave = std::fs::File::from(pty_pair.slave);
 
@@ -301,14 +300,14 @@ fn spawn_pty() -> Result<(std::os::fd::OwnedFd, std::fs::File)> {
         });
     }
 
-    bash.spawn().context("Error spawning bash subprocess")?;
+    let child = bash.spawn().context("Error spawning bash subprocess")?;
 
-    Ok((pty_pair.master, slave))
+    Ok((pty_pair.master, slave, child))
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let (master, slave) = spawn_pty()?;
+    let (master, slave, mut child) = spawn_pty()?;
     let (input_sender, input_recv) = mpsc::unbounded_channel::<Vec<u8>>();
     let (output_sender, output_recv) = mpsc::unbounded_channel::<Vec<u8>>(); 
     let handle = tokio::spawn(echo_pty(master, input_recv, output_sender));
@@ -321,7 +320,11 @@ async fn main() -> Result<()> {
         Err(error) = Server::builder().add_service(service).serve(address)
             => Err(error).context("Failed to listen on {address}")?,
         result = handle
-            => result.map_err(Into::into).unwrap_or_else(Err).context("Failed to echo pty")?
+            => result.map_err(Into::into).unwrap_or_else(Err).context("Failed to echo pty")?,
+        status = child.wait() => {
+            let status = status.context("Failed to wait for bash subprocess")?.code().unwrap_or(1);
+            std::process::exit(status);
+        }
     }
     unreachable!();
 }
