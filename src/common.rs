@@ -48,7 +48,7 @@ pub struct Cli {
     pub max_tokens: Option<u32>
 }
 
-pub async fn write<T: AsRef<[u8]>>(text: T) -> io::Result<()> {
+pub async fn write(text: impl AsRef<[u8]>) -> io::Result<()> {
     let mut stdout = io::stdout();
     stdout.write_all(text.as_ref()).await?;
     stdout.flush().await
