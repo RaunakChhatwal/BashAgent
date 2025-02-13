@@ -36,20 +36,20 @@ async fn run_bash_tool(
     slave: &std::fs::File,
     BashRequest { input }: BashRequest
 ) -> Result<BashResponse> {
-    let slave_fd = slave.as_raw_fd();
-    let mut handle = tokio::task::spawn_blocking(move || unsafe { t_ioc_read_invoc(slave_fd) });
-
-    let input = (input + "\n").as_bytes().into();
-    input_sender.send(input).context("Error sending input to the echoing task.")?;
-
     let mut output = vec![];
-    loop {
-        tokio::select! {
-            result = &mut handle => {
-                result.context("Failed to wait for ioctl")?.context("Error calling ioctl")?;
-                break;
-            },
-            Some(data) = output_recv.recv() => output.extend(data)
+    for line in input.split("\n").map(str::as_bytes) {
+        let slave_fd = slave.as_raw_fd();
+        let mut handle = tokio::task::spawn_blocking(move || unsafe { t_ioc_read_invoc(slave_fd) });
+        input_sender.send(line.to_vec()).context("Error sending input to the echoing task.")?;
+
+        loop {
+            tokio::select! {
+                result = &mut handle => {
+                    result.context("Failed to wait for ioctl")?.context("Error calling ioctl")?;
+                    break;
+                },
+                Some(data) = output_recv.recv() => output.extend(data)
+            }
         }
     }
 
@@ -232,10 +232,9 @@ impl tool_runner_server::ToolRunner for ToolRunner {
     }
 }
 
-async fn write_all(mut writer: impl AsyncWriteExt + Unpin, text: impl AsRef<[u8]>)
--> io::Result<()> {
+async fn write_all(mut writer: impl AsyncWriteExt + Unpin, text: impl AsRef<[u8]>) -> Result<()> {
     writer.write_all(text.as_ref()).await?;
-    writer.flush().await
+    writer.flush().await.map_err(Into::into)
 }
 
 async fn echo_pty(master: std::os::fd::OwnedFd, mut input_recv: Recv, output_sender: Sender)
@@ -248,7 +247,6 @@ async fn echo_pty(master: std::os::fd::OwnedFd, mut input_recv: Recv, output_sen
     let mut output_buffer = [0u8; 1024];
 
     loop {
-        // TODO: modularize this
         tokio::select! {
             n = stdin.read(&mut input_buffer) => match n {
                 Ok(n) => {
@@ -256,18 +254,19 @@ async fn echo_pty(master: std::os::fd::OwnedFd, mut input_recv: Recv, output_sen
                     write_all(&mut write_end, &input).await.context("Failed to write pty input")?;
                     output_sender.send(input).context("Failed to echo input to output_sender")?;
                 },
-                Err(error) => return Err(error).context("Failed to read from master pty")
+                Err(error) => return Err(error).context("Failed to read from stdin")
             },
-            Some(input) = input_recv.recv() => {
+            Some(mut input) = input_recv.recv() => {
+                input.push(b'\n');
                 write_all(io::stdout(), &input).await.context("Failed to print pty input")?;
                 write_all(&mut write_end, &input).await.context("Failed to write pty input")?;
                 output_sender.send(input).context("Failed to echo input to output_sender")?;
             },
             n = read_end.read(&mut output_buffer) => match n {
                 Ok(n) => {
-                    let data = &output_buffer[..n];
-                    output_sender.send(data.to_vec()).context("Failed to send pty output")?;
-                    write_all(io::stdout(), data).await.context("Failed to print pty output")?;
+                    let data = output_buffer[..n].to_vec();
+                    write_all(io::stdout(), &data).await.context("Failed to print pty output")?;
+                    output_sender.send(data).context("Failed to send pty output")?;
                 },
                 Err(error) => return Err(error).context("Failed to read from master pty")
             }
@@ -277,6 +276,7 @@ async fn echo_pty(master: std::os::fd::OwnedFd, mut input_recv: Recv, output_sen
 
 nix::ioctl_none_bad!(t_ioc_s_c_tty, nix::libc::TIOCSCTTY);
 
+// inspired by portable_pty::SlavePty::spawn_command
 fn spawn_pty() -> Result<(std::os::fd::OwnedFd, std::fs::File, tokio::process::Child)> {
     let pty_pair = nix::pty::openpty(None, None).context("Failed to open pty pair")?;
     let slave = std::fs::File::from(pty_pair.slave);
@@ -286,7 +286,6 @@ fn spawn_pty() -> Result<(std::os::fd::OwnedFd, std::fs::File, tokio::process::C
     termios::cfmakeraw(&mut termios);
     termios::tcsetattr(pty_pair.master.as_fd(), termios::SetArg::TCSANOW, &termios)?;
 
-    // portable_pty::SlavePty::spawn_command;
     let mut bash = Command::new("bash");
     for setter in [Command::stdin, Command::stdout, Command::stderr] {
         setter(&mut bash, Stdio::from(slave.try_clone().context("Error copying slave pty")?));
@@ -301,7 +300,6 @@ fn spawn_pty() -> Result<(std::os::fd::OwnedFd, std::fs::File, tokio::process::C
     }
 
     let child = bash.spawn().context("Error spawning bash subprocess")?;
-
     Ok((pty_pair.master, slave, child))
 }
 
@@ -317,14 +315,17 @@ async fn main() -> Result<()> {
     let service = tool_runner_server::ToolRunnerServer::new(tool_runner);
 
     tokio::select! {
-        Err(error) = Server::builder().add_service(service).serve(address)
-            => Err(error).context("Failed to listen on {address}")?,
-        result = handle
-            => result.map_err(Into::into).unwrap_or_else(Err).context("Failed to echo pty")?,
+        result = Server::builder().add_service(service).serve(address) => match result {
+            Ok(()) => bail!("Service listener exitted prematurely"),
+            error => error.context("Failed to listen on {address}")
+        },
+        result = handle => match result {
+            Ok(Ok(())) => bail!("Echoing task exitted prematurely"),
+            error => error.map_err(Into::into).unwrap_or_else(Err).context("Failed to echo pty")
+        },
         status = child.wait() => {
             let status = status.context("Failed to wait for bash subprocess")?.code().unwrap_or(1);
             std::process::exit(status);
         }
     }
-    unreachable!();
 }
