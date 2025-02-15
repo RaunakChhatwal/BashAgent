@@ -23,14 +23,18 @@ fn serialize_assistant_response(message: &str, tool_use: &[ToolUse]) -> Value {
 }
 
 fn serialize_tool_results(tool_use: &[ToolUse]) -> Value {
-    let serialize_tool_result = |ToolUse { id, output: (content, is_error), .. }: &_| json!({
-        "type": "tool_result",
-        "tool_use_id": id,
-        "content": content,
-        "is_error": is_error
-    });
+    let mut tool_results = vec![];
+    for ToolUse { id, output, .. } in tool_use {
+        let content = output.as_ref().map(|(content, _)| content.as_str());
+        let is_error = output.as_ref().map(|(_, is_error)| is_error);
+        tool_results.push(json!({
+            "type": "tool_result",
+            "tool_use_id": id,
+            "content": content.unwrap_or("Operation cancelled by user"),
+            "is_error": is_error.unwrap_or(&true)
+        }));
+    }
 
-    let tool_results = tool_use.into_iter().map(serialize_tool_result).collect::<Vec<_>>();
     json!({ "role": "user", "content": tool_results })
 }
 
@@ -139,15 +143,17 @@ fn stream_tool_use(
 }
 
 // first stream the message and print the tokens, then stream the tool uses
-pub async fn stream_response(response: reqwest::Response) -> Result<(String, Vec<ToolUse>)> {
-    let mut message = "".to_string();
-    let mut tool_uses = vec![];
+pub async fn stream_response(
+    response: reqwest::Response,
+    message: &mut String,
+    tool_uses: &mut Vec<ToolUse>,
+) -> Result<()> {
     let mut partial_json = "".to_string();
     let mut eventsource = response.bytes_stream().eventsource();
 
     while let Some(event) = eventsource.next().await {
         let event = event.context("Failed to fetch tokens.")?;
-        if let Some(tool_use) = stream_response_message(event, &mut message).await? {
+        if let Some(tool_use) = stream_response_message(event, message).await? {
             tool_uses.push(tool_use);
             break;
         }
@@ -155,12 +161,11 @@ pub async fn stream_response(response: reqwest::Response) -> Result<(String, Vec
 
     while let Some(event) = eventsource.next().await {
         let event = event.context("Failed to fetch tokens.")?;
-        let prev_tool_use =
-            tool_uses.last_mut().expect("The previous while loop appends to tool_uses.");
+        let prev_tool_use = tool_uses.last_mut().unwrap();
         if let Some(tool_use) = stream_tool_use(event, &mut partial_json, prev_tool_use)? {
             tool_uses.push(tool_use);
         }
     }
 
-    Ok((message, tool_uses))
+    Ok(())
 }

@@ -98,12 +98,9 @@ async fn undo_edit(path: &str) -> Result<String> {
     Ok(format!("Last edit to {path} undone successfully. Please review:\n{snippet}"))
 }
 
-async fn call_text_editor_tool(input: &Value) -> Result<String> {
-    println!("Running text_editor with input {}.",
-        serde_json::to_string_pretty(input).context("Failed to parse input")?);
-
+async fn call_text_editor_tool(input: Value) -> Result<String> {
     let TextEditorInput { command, path, file_text, insert_line, new_str, old_str, view_range } =
-        serde_json::from_value::<TextEditorInput>(input.clone()).context("Failed to parse input")?;
+        serde_json::from_value::<TextEditorInput>(input).context("Failed to parse input")?;
 
     let output = match command.as_str() {
         "view" => call_view(&path, view_range).await,
@@ -121,7 +118,7 @@ async fn call_text_editor_tool(input: &Value) -> Result<String> {
 pub async fn call_tool(name: &str, input: &Value) -> Result<(String, bool)> {
     let result = match name {
         "bash" => call_bash_tool(input).await,
-        "text_editor" => call_text_editor_tool(input).await,
+        "text_editor" => call_text_editor_tool(input.clone()).await,
         tool => Err(anyhow!("Tool {tool} not available"))
     };
 

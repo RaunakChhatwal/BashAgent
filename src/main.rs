@@ -4,30 +4,48 @@ mod anthropic;
 mod client;
 mod common;
 
-use std::sync::Arc;
+use std::{mem::replace, sync::Arc};
 use anyhow::{Context, Result};
 use anthropic::{send_request, stream_response};
-use common::{Cli, Exchange};
+use common::{Cli, Exchange, ToolUse};
 
-// send prompt to llm, run tools, send back tool results, repeat until no more tool use
-async fn run_exchange(prompt: String, exchanges: &[Exchange]) -> Result<Exchange> {
-    let mut exchange = Exchange { prompt, response: vec![] };
-    let response = send_request(exchanges, &exchange).await?;
-    let (mut message, mut tool_uses) = stream_response(response).await?;
+#[derive(Default)]
+struct RunExchangeTask<'a> {
+    exchanges: &'a [Exchange],
+    current: Exchange,
+    message: String,
+    tool_uses: Vec<ToolUse>
+}
 
-    while !tool_uses.is_empty() {
-        for tool_use in &mut tool_uses {
-            tool_use.output = client::call_tool(&tool_use.name, &tool_use.input).await?;
+impl<'a> RunExchangeTask<'a> {
+    fn new(prompt: String, exchanges: &'a [Exchange]) -> Self {
+        let current = Exchange { prompt, response: vec![] };
+        RunExchangeTask { exchanges, current, ..Default::default() }
+    }
+
+    async fn run(&mut self) -> Result<()> {
+        let Self { exchanges, current, message, tool_uses } = self;
+        let response = send_request(exchanges, current).await?;
+        stream_response(response, message, tool_uses).await?;
+
+        while !tool_uses.is_empty() {
+            for tool_use in tool_uses.iter_mut() {
+                tool_use.output = Some(client::call_tool(&tool_use.name, &tool_use.input).await?);
+            }
+
+            current.response.push((replace(message, "".into()), replace(tool_uses, vec![])));
+            let response = send_request(exchanges, current).await?;
+            stream_response(response, message, tool_uses).await?;
         }
-        exchange.response.push((message, tool_uses));
-        (message, tool_uses) = stream_response(send_request(exchanges, &exchange).await?).await?;
+
+        Ok(())
     }
 
-    if !message.is_empty() {
-        exchange.response.push((message, vec![]));
+    fn collect(self) -> Exchange {
+        let Self { mut current, message, tool_uses, .. } = self;
+        current.response.push((message, tool_uses));
+        return current;
     }
-
-    Ok(exchange)
 }
 
 async fn trigger_cancel(cancel: Arc<tokio::sync::Notify>) {
@@ -49,14 +67,22 @@ async fn main() -> Result<()> {
 
     let mut exchanges = vec![];
     loop {
-        let Some(prompt) = common::input("> ").await.context("Failed to read prompt")? else {
-            println!();
-            return Ok(());
+        let prompt_or_eof = tokio::select! {
+            _ = cancel.notified() => continue,
+            prompt = common::input("> ") => prompt.context("Failed to read prompt")?
         };
 
+        let Some(prompt) = prompt_or_eof else {
+            // exit on EOF
+            println!();
+            std::process::exit(0);
+        };
+
+        let mut task = RunExchangeTask::new(prompt, &exchanges);
         tokio::select! {
-            _ = cancel.notified() => continue,
-            exchange = run_exchange(prompt, &exchanges) => exchanges.push(exchange?)
+            _ = cancel.notified() => (),
+            result = task.run() => result.context("Failed to run new exchange")?
         }
+        exchanges.push(task.collect());
     }
 }

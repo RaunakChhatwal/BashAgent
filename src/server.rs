@@ -51,10 +51,11 @@ async fn run_bash_tool(
                 Some(data) = output_recv.recv() => output.extend(data)
             }
         }
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
 
     // read any leftover data
-    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     let data_future = std::pin::pin!(output_recv.recv());
     if let futures::task::Poll::Ready(Some(data)) = futures::poll!(data_future) {
         output.extend(data); 
@@ -249,6 +250,7 @@ async fn echo_pty(master: std::os::fd::OwnedFd, mut input_recv: Recv, output_sen
     loop {
         tokio::select! {
             n = stdin.read(&mut input_buffer) => match n {
+                Ok(0) => bail!("Stdin dropped"),
                 Ok(n) => {
                     let input = input_buffer[..n].to_vec();
                     write_all(&mut write_end, &input).await.context("Failed to write pty input")?;
@@ -263,6 +265,7 @@ async fn echo_pty(master: std::os::fd::OwnedFd, mut input_recv: Recv, output_sen
                 output_sender.send(input).context("Failed to echo input to output_sender")?;
             },
             n = read_end.read(&mut output_buffer) => match n {
+                Ok(0) => bail!("Lost master pty handle"),
                 Ok(n) => {
                     let data = output_buffer[..n].to_vec();
                     write_all(io::stdout(), &data).await.context("Failed to print pty output")?;

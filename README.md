@@ -1,6 +1,6 @@
 # BashAgent
 
-BashAgent is the first AI agentic application to allow access to interactive bash commands and developer shells. It achieves this by having developed a feature into the Linux kernel to introspect pseudo-terminal (PTY) interactions between a bash process and its child processes. When a bash command expects input from the user, the kernel notifies the BashAgent server and the server in turn relays the prompt to the client.
+BashAgent is an AI agentic application that gives LLMs access to interactive bash commands and developer shells. Whereas existing shell integration in apps like Cursor do not support interactive commands that wait for input during runtime, BashAgent includes a feature into the Linux kernel to introspect the pseudo-terminal (PTY) between a bash process and its child processes. When a bash command expects input from the user, the kernel notifies the BashAgent server and the server in turn relays the prompt to the client.
 
 ## Demonstration
 ```

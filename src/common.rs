@@ -26,10 +26,10 @@ pub struct ToolUse {
     pub id: String,
     pub input: Value,
     #[serde(default)]
-    pub output: (String, bool)      // bool denotes whether error
+    pub output: Option<(String, bool)>      // bool denotes whether error
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Exchange {
     pub prompt: String,
     pub response: Vec<(String, Vec<ToolUse>)>
