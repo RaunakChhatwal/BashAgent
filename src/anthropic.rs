@@ -3,14 +3,14 @@ use eventsource_stream::{Event, Eventsource};
 use futures::StreamExt;
 use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
 use serde_json::{json, Value};
-use crate::common::{write, Cli, Exchange, Tool, ToolUse};
+use crate::common::{bash_tool, text_editor_tool, write, Exchange, ModelParams, Tool, ToolUse};
 
-fn serialize_assistant_response(message: &str, tool_use: &[ToolUse]) -> Value {
+fn serialize_assistant_response(message: &str, tool_uses: &[ToolUse]) -> Value {
     let mut content_block = vec![];
     if !message.is_empty() {
         content_block.push(json!({ "type": "text", "text": message }));                
     }
-    for ToolUse { name, id, input, .. } in tool_use {
+    for ToolUse { name, id, input, .. } in tool_uses {
         content_block.push(json!({
             "type": "tool_use",
             "id": id,
@@ -22,9 +22,9 @@ fn serialize_assistant_response(message: &str, tool_use: &[ToolUse]) -> Value {
     json!({ "role": "assistant", "content": content_block })
 }
 
-fn serialize_tool_results(tool_use: &[ToolUse]) -> Value {
+fn serialize_tool_results(tool_uses: &[ToolUse]) -> Value {
     let mut tool_results = vec![];
-    for ToolUse { id, output, .. } in tool_use {
+    for ToolUse { id, output, .. } in tool_uses {
         let content = output.as_ref().map(|(content, _)| content.as_str());
         let is_error = output.as_ref().map(|(_, is_error)| is_error);
         tool_results.push(json!({
@@ -38,43 +38,44 @@ fn serialize_tool_results(tool_use: &[ToolUse]) -> Value {
     json!({ "role": "user", "content": tool_results })
 }
 
-fn build_request_body(exchanges: &[Exchange], current: &Exchange) -> serde_json::Value {
+fn serialize_tool(tool: Tool) -> Value {
+    let input_schema =
+        serde_json::from_str::<Value>(tool.input_schema).expect("Schema wasn't valid json");
+
+    json!({
+        "name": tool.name,
+        "description": tool.description,
+        "input_schema": input_schema
+    })
+}
+
+fn build_request_body(exchanges: &[Exchange], current: &Exchange, params: &ModelParams) -> Value {
     let mut messages = vec![];
     for Exchange { prompt, response } in exchanges.into_iter().chain([current]) {
         messages.push(json!({ "role": "user", "content": prompt }));
-        for (message, tool_use) in response {
-            messages.push(serialize_assistant_response(message, tool_use));
-            if !tool_use.is_empty() {
-                messages.push(serialize_tool_results(tool_use));
+        for (message, tool_uses) in response {
+            messages.push(serialize_assistant_response(message, tool_uses));
+            if !tool_uses.is_empty() {
+                messages.push(serialize_tool_results(tool_uses));
             }
         }
     }
 
-    let bash_tool = Tool {
-        name: "bash",
-        description: include_str!("./resources/bash-description.txt"),
-        input_schema: include_str!("./resources/bash-schema.json")
-    };
-
-    let text_editor_tool = Tool {
-        name: "text_editor",
-        description: include_str!("./resources/text_editor-description.txt"),
-        input_schema: include_str!("./resources/text_editor-schema.json")
-    };
-
-    let Cli { temperature, max_tokens, model, .. } = clap::Parser::parse();
+    let ModelParams { model, max_tokens, temperature, .. } = params;
     return json!({
         "model": model,
-        "max_tokens": max_tokens.unwrap_or(2048),
-        "temperature": temperature.unwrap_or(1.0),
+        "max_tokens": max_tokens,
+        "temperature": temperature,
         "stream": true,
         "system": include_str!("resources/system-prompt.txt"),
-        "tools": [bash_tool, text_editor_tool],
+        "tools": ([bash_tool, text_editor_tool]).map(serialize_tool),
         "messages": messages
     });
 }
 
-pub async fn send_request(exchanges: &[Exchange], current: &Exchange) -> Result<reqwest::Response> {
+pub async fn send_request(
+    exchanges: &[Exchange], current: &Exchange, params: &ModelParams
+) -> Result<reqwest::Response> {
     let mut headers = HeaderMap::new();
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
     let api_key = std::env::var("ANTHROPIC_API_KEY")
@@ -83,8 +84,8 @@ pub async fn send_request(exchanges: &[Exchange], current: &Exchange) -> Result<
     headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
 
     let url = "https://api.anthropic.com/v1/messages";
-    let body = build_request_body(exchanges, current).to_string();
-    let request = reqwest::Client::new().post(url).headers(headers).body(body);
+    let body = build_request_body(exchanges, current, params);
+    let request = reqwest::Client::new().post(url).headers(headers).json(&body);
 
     let response = request.send().await?;
     let status = response.status();
@@ -104,6 +105,9 @@ fn parse_tool_use_content_block_start(response: &Value) -> Result<ToolUse> {
 async fn stream_response_message(event: Event, message: &mut String) -> Result<Option<ToolUse>> {
     let Event { event, data, .. } = event;
     let response = serde_json::from_str::<Value>(&data).context("Data not valid JSON.")?;
+    if event == "error" {
+        bail!("{}", response["message"].as_str().unwrap_or("Failed to fetch response chunk"));
+    }
 
     if response["content_block"]["type"].as_str() == Some("tool_use") {
         assert_eq!(event, "content_block_start",
@@ -113,7 +117,7 @@ async fn stream_response_message(event: Event, message: &mut String) -> Result<O
         let tokens =
             response["delta"]["text"].as_str().context("Tokens not found in content block.")?;
         message.push_str(tokens);
-        write(tokens).await.context("Failed to output tokens.")?;
+        write(tokens).await.context("Failed to print tokens.")?;
     } else if event == "content_block_stop" {
         print!("\n\n");
     }
@@ -122,11 +126,12 @@ async fn stream_response_message(event: Event, message: &mut String) -> Result<O
 }
 
 fn stream_tool_use(
-    Event { event, data, .. }: Event,
-    partial_json: &mut String,
-    prev_tool_use: &mut ToolUse
+    Event { event, data, .. }: Event, partial_json: &mut String, prev_tool_use: &mut ToolUse
 ) -> Result<Option<ToolUse>> {
     let response = serde_json::from_str::<Value>(&data).context("Data not valid JSON.")?;
+    if event == "error" {
+        bail!("{}", response["message"].as_str().unwrap_or("Failed to fetch response chunk"));
+    }
 
     if event == "content_block_start"{
         partial_json.clear();
@@ -144,9 +149,7 @@ fn stream_tool_use(
 
 // first stream the message and print the tokens, then stream the tool uses
 pub async fn stream_response(
-    response: reqwest::Response,
-    message: &mut String,
-    tool_uses: &mut Vec<ToolUse>,
+    response: reqwest::Response, message: &mut String, tool_uses: &mut Vec<ToolUse>
 ) -> Result<()> {
     let mut partial_json = "".to_string();
     let mut eventsource = response.bytes_stream().eventsource();
@@ -167,5 +170,5 @@ pub async fn stream_response(
         }
     }
 
-    Ok(())
+    return Ok(());
 }

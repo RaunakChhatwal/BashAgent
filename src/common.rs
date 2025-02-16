@@ -1,4 +1,4 @@
-use serde_json::{json, Value};
+use serde_json::Value;
 use tokio::io::{self, AsyncWriteExt, AsyncBufReadExt, BufReader};
 
 pub struct Tool {
@@ -7,18 +7,17 @@ pub struct Tool {
     pub input_schema: &'static str,     // TODO: change this to serde_json::Value
 }
 
-impl serde::Serialize for Tool {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        match serde_json::from_str::<Value>(self.input_schema) {
-            Ok(input_schema) => json!({
-                "name": self.name,
-                "description": self.description,
-                "input_schema": input_schema,
-            }).serialize(serializer),
-            Err(error) => Err(serde::ser::Error::custom(error))
-        }
-    }
-}
+pub const bash_tool: Tool = Tool {
+    name: "bash",
+    description: include_str!("./resources/bash-description.txt"),
+    input_schema: include_str!("./resources/bash-schema.json")
+};
+
+pub const text_editor_tool: Tool = Tool {
+    name: "text_editor",
+    description: include_str!("./resources/text_editor-description.txt"),
+    input_schema: include_str!("./resources/text_editor-schema.json")
+};
 
 #[derive(Clone, Debug, Default, serde::Deserialize)]
 pub struct ToolUse {
@@ -35,17 +34,38 @@ pub struct Exchange {
     pub response: Vec<(String, Vec<ToolUse>)>
 }
 
-#[derive(Clone, Debug, clap::Parser, PartialEq)]
+pub enum Provider {
+    Anthropic,
+    OpenAI
+}
+
+pub struct ModelParams {
+    pub provider: Provider,
+    pub model: String,
+    pub max_tokens: u32,
+    pub temperature: f64
+}
+
+#[derive(clap::Args, Clone, Debug, PartialEq)]
+#[group(multiple = false)]
+pub struct Model {
+    #[clap(long)]
+    pub anthropic: Option<String>,
+    #[clap(long, default_value = "gpt-4o")] // "o3-mini")]
+    pub openai: String
+}
+
+#[derive(clap::Parser, Clone, Debug, PartialEq)]
 #[command(version, about, long_about = None)]
 pub struct Cli {
     #[arg(long)]
     pub server: String,
-    #[arg(long, default_value = "claude-3-5-sonnet-20241022")]
-    pub model: String,
-    #[arg(long)]
-    pub temperature: Option<f64>,
-    #[arg(long)]
-    pub max_tokens: Option<u32>
+    #[command(flatten)]
+    pub model: Model,
+    #[arg(long, default_value_t = 8192)]
+    pub max_tokens: u32,
+    #[arg(long, default_value_t = 1.0)]
+    pub temperature: f64
 }
 
 pub async fn write(text: impl AsRef<[u8]>) -> io::Result<()> {

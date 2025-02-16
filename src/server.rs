@@ -31,13 +31,10 @@ mod bash_agent {
 nix::ioctl_none!(t_ioc_read_invoc, 'T', 0x69);
 
 async fn run_bash_tool(
-    input_sender: &Sender,
-    output_recv: &mut Recv,
-    slave: &std::fs::File,
-    BashRequest { input }: BashRequest
+    input_sender: &Sender, output_recv: &mut Recv, slave: &std::fs::File, request: BashRequest
 ) -> Result<BashResponse> {
     let mut output = vec![];
-    for line in input.split("\n").map(str::as_bytes) {
+    for line in request.input.split("\n").map(str::as_bytes) {
         let slave_fd = slave.as_raw_fd();
         let mut handle = tokio::task::spawn_blocking(move || unsafe { t_ioc_read_invoc(slave_fd) });
         input_sender.send(line.to_vec()).context("Error sending input to the echoing task.")?;
@@ -88,7 +85,7 @@ async fn write(path: PathBuf, content: String) -> Result<()> {
         history.insert(path, FileHistoryEntry { latest: content, history: vec![] });
     }
 
-    Ok(())
+    return Ok(());
 }
 
 fn validate_path(path: &str) -> Result<PathBuf> {
@@ -238,8 +235,9 @@ async fn write_all(mut writer: impl AsyncWriteExt + Unpin, text: impl AsRef<[u8]
     writer.flush().await.map_err(Into::into)
 }
 
-async fn echo_pty(master: std::os::fd::OwnedFd, mut input_recv: Recv, output_sender: Sender)
--> Result<()> {
+async fn echo_pty(
+    master: std::os::fd::OwnedFd, mut input_recv: Recv, output_sender: Sender
+) -> Result<()> {
     let mut stdin = io::stdin();
     let mut write_end: fs::File = std::fs::File::from(master).into();
     let mut input_buffer = [0u8; 1024];
@@ -298,7 +296,7 @@ fn spawn_pty() -> Result<(std::os::fd::OwnedFd, std::fs::File, tokio::process::C
         bash.pre_exec(move || {
             unistd::setsid()?;      // create new session
             t_ioc_s_c_tty(0)?;      // set controlling terminal
-            Ok(())
+            return Ok(());
         });
     }
 
